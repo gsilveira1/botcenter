@@ -19,6 +19,7 @@ Client products use a versioned REST API (`/v1`) with scoped API keys and receiv
 | `packages/config`    | `@botcenter/config`    | Shared tsconfig and ESLint flat config                                                  |
 | `packages/contracts` | `@botcenter/contracts` | Zod schemas of the public API, error codes, events, bot definitions, webhook signatures |
 | `prisma/`            | `@botcenter/prisma`    | Prisma schema, SQL migrations, Prisma CLI (see `prisma/README.md`)                      |
+| `apps/api`           | `@botcenter/api`       | NestJS API (`ROLE=api`) and workers (`ROLE=worker`), see `apps/api/README.md`           |
 
 ## Commands
 
