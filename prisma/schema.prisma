@@ -368,6 +368,8 @@ model Message {
   @@index([tenantId, createdAt])
   @@index([instanceId, contact])
   @@index([conversationId])
+  /// `check-alerts` reads the outbound messages of the last 10 minutes every minute (ARCH-14).
+  @@index([direction, createdAt])
   /// The inbound messages that wait for the bot step of their conversation.
   @@index([instanceId, contact, createdAt], map: "messages_bot_pending_idx", where: raw("\"botPending\""))
   @@map("messages")
@@ -476,6 +478,8 @@ model WebhookDelivery {
   @@unique([subscriptionId, eventId])
   @@index([status, nextAttemptAt])
   @@index([tenantId, createdAt])
+  /// `check-alerts` reads the deliveries that changed in the last 15 minutes every minute (ARCH-14).
+  @@index([updatedAt])
   @@map("webhook_deliveries")
 }
 
