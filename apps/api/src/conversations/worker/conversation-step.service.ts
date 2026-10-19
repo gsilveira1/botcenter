@@ -22,7 +22,6 @@ import type { LastMenu } from '../menu-reply';
 import { uuidV7 } from '../uuid-v7';
 import { AfterCommitService } from './after-commit.service';
 import { BotHttpService } from './bot-http';
-import type { BotWebhookCall } from './bot-http';
 import { ConversationLoader } from './conversation-loader.service';
 import { ConversationWriter } from './conversation-writer.service';
 import { EngineDiagnosticsReporter } from './engine-diagnostics';
@@ -96,10 +95,7 @@ export class ConversationStepService {
     private readonly alerts: AlertService,
   ) {}
 
-  async applyMessage(
-    instance: InstanceContext,
-    message: PendingMessage,
-  ): Promise<BotWebhookCall[]> {
+  async applyMessage(instance: InstanceContext, message: PendingMessage): Promise<void> {
     return this.withRetry(instance, message.contact, async (fresh) => {
       if (fresh && !(await this.writer.isPending(instance.tenantId, message.id))) {
         return null;
@@ -113,11 +109,7 @@ export class ConversationStepService {
     });
   }
 
-  async applyTimer(
-    instance: InstanceContext,
-    contact: string,
-    job: TimerJob,
-  ): Promise<BotWebhookCall[]> {
+  async applyTimer(instance: InstanceContext, contact: string, job: TimerJob): Promise<void> {
     return this.withRetry(instance, contact, () => this.planTimer(instance, contact, job));
   }
 
@@ -125,15 +117,16 @@ export class ConversationStepService {
     instance: InstanceContext,
     contact: string,
     plan: (fresh: boolean) => Promise<StepPlan | null>,
-  ): Promise<BotWebhookCall[]> {
+  ): Promise<void> {
     for (let attempt = 1; attempt <= STEP_ATTEMPTS; attempt += 1) {
       const planned = await plan(attempt > 1);
       if (planned === null) {
-        return [];
+        return;
       }
       try {
         const outcome = await this.writer.write(planned);
-        return await this.afterCommit.run(planned, outcome);
+        await this.afterCommit.run(planned, outcome);
+        return;
       } catch (error) {
         if (!(error instanceof WriteConflictError)) {
           throw error;
@@ -229,14 +222,17 @@ export class ConversationStepService {
       conversation.botVersion,
     );
     const input = mapMenuReply(toEngineInput(message.content), conversation.lastMenu);
-    const external = this.http.externalCaller({
-      conversation_id: conversation.id,
-      instance_id: instance.instanceId,
-      external_ref: instance.externalRef,
-      contact: conversation.contact,
-      bot_id: bot.botSlug,
-      bot_version: bot.version,
-    });
+    const external = this.http.externalCaller(
+      {
+        conversation_id: conversation.id,
+        instance_id: instance.instanceId,
+        external_ref: instance.externalRef,
+        contact: conversation.contact,
+        bot_id: bot.botSlug,
+        bot_version: bot.version,
+      },
+      { tenantId: instance.tenantId, botId: bot.botId },
+    );
     const result = await handleInbound(bot.definition, toSnapshot(conversation), input, {
       now,
       external,

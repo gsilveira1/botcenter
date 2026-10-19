@@ -8,6 +8,8 @@ import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { TransactionClient } from '../prisma/prisma.service';
 import { AuditService } from '../services/audit.service';
+import { generateWebhookSecret } from '../webhooks/webhook-delivery.policy';
+import { SECRET_ROTATION_GRACE_MS, WebhookSecrets } from '../webhooks/webhook-secrets';
 import { bindInstances } from './bot-bindings';
 import type { BindingChange } from './bot-bindings';
 import type { PutBotBody } from './bot-request';
@@ -27,18 +29,23 @@ interface PublishResult {
   bot: BotRow;
   created: boolean;
   versionCreated: boolean;
+  /** True for a new bot, and for a bot of an older version without a signing secret. */
+  needsSecret: boolean;
 }
 
 /**
- * `PUT /v1/bots/{id}` and `GET /v1/bots/{id}`. The `{id}` is the slug of the bot in the tenant.
- * A new `bot_versions` row is written only when the hash of the parsed definition changed. Open
- * conversations stay on their version; new conversations use the current version.
+ * `PUT /v1/bots/{id}`, `GET /v1/bots/{id}`, and `POST /v1/bots/{id}/rotate-secret`. The `{id}` is the
+ * slug of the bot in the tenant. A new `bot_versions` row is written only when the hash of the parsed
+ * definition changed. Open conversations stay on their version; new conversations use the current
+ * version. Each bot has a signing secret for its `external` and `call_webhook` requests (SEC-06), sealed
+ * with `SecretBox` and the bot id as the additional data; only the create and the rotation show it.
  */
 @Injectable()
 export class BotsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly secrets: WebhookSecrets,
   ) {}
 
   async put(auth: AuthContext, slug: string, body: PutBotBody): Promise<BotResponse> {
@@ -58,11 +65,59 @@ export class BotsService {
         await this.assertBotInKeyScope(tx, auth, current.id);
       }
       const published = await this.publish(tx, auth.tenantId, slug, body.name, definition);
+      const secret = published.needsSecret
+        ? await this.issueSecret(tx, auth.tenantId, published.bot.id)
+        : undefined;
       const change = await bindInstances(tx, auth, published.bot.id, body.instance_ids);
       await this.recordAudit(tx, auth, published, change);
-      return published;
+      return { ...published, secret };
     });
-    return this.toResponse(auth, result.bot);
+    const response = await this.toResponse(auth, result.bot);
+    return result.secret ? { ...response, signing_secret: result.secret } : response;
+  }
+
+  /**
+   * Makes a new signing secret. The old secret signs the requests too for 24 h (two `v1=` values), so
+   * the client can change its receiver without a gap. A second rotation in that time drops the oldest.
+   */
+  async rotateSecret(auth: AuthContext, slug: string, now = new Date()): Promise<BotResponse> {
+    const result = await this.prisma.forTenant(auth.tenantId).$transaction(async (scoped) => {
+      const tx = scoped as unknown as TransactionClient;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`bot:${auth.tenantId}:${slug}`}, 0))`;
+      const current = await tx.bot.findUnique({
+        where: { tenantId_slug: { tenantId: auth.tenantId, slug } },
+        select: { ...BOT_SELECT, secretEncrypted: true },
+      });
+      if (!current) {
+        throw notFound('Bot');
+      }
+      await this.assertBotInKeyScope(tx, auth, current.id);
+      const secret = generateWebhookSecret();
+      const bot = await tx.bot.update({
+        where: { id: current.id },
+        data: {
+          secretEncrypted: this.secrets.seal(current.id, secret),
+          previousSecretEncrypted: current.secretEncrypted,
+          previousSecretExpiresAt: current.secretEncrypted
+            ? new Date(now.getTime() + SECRET_ROTATION_GRACE_MS)
+            : null,
+        },
+        select: BOT_SELECT,
+      });
+      await this.audit.record(
+        {
+          tenantId: auth.tenantId,
+          actor: auditActor(auth),
+          action: 'bot.rotate_secret',
+          targetType: 'bot',
+          targetId: current.id,
+          metadata: { slug },
+        },
+        tx,
+      );
+      return { bot, secret };
+    });
+    return { ...(await this.toResponse(auth, result.bot)), signing_secret: result.secret };
   }
 
   async get(auth: AuthContext, slug: string): Promise<BotResponse> {
@@ -129,7 +184,11 @@ export class BotsService {
   ): Promise<PublishResult> {
     const existing = await tx.bot.findUnique({
       where: { tenantId_slug: { tenantId, slug } },
-      select: { ...BOT_SELECT, versions: { orderBy: { version: 'desc' }, take: 1 } },
+      select: {
+        ...BOT_SELECT,
+        secretEncrypted: true,
+        versions: { orderBy: { version: 'desc' }, take: 1 },
+      },
     });
     const json = definition as unknown as Prisma.InputJsonObject;
     if (!existing) {
@@ -143,7 +202,7 @@ export class BotsService {
         },
         select: BOT_SELECT,
       });
-      return { bot, created: true, versionCreated: true };
+      return { bot, created: true, versionCreated: true, needsSecret: true };
     }
     const latest = existing.versions[0];
     const changed =
@@ -160,7 +219,26 @@ export class BotsService {
       data: { name, currentVersion: version },
       select: BOT_SELECT,
     });
-    return { bot, created: false, versionCreated: changed };
+    return {
+      bot,
+      created: false,
+      versionCreated: changed,
+      needsSecret: existing.secretEncrypted === null,
+    };
+  }
+
+  /** A new signing secret for a bot without one. The secret leaves the API only in this response. */
+  private async issueSecret(
+    tx: TransactionClient,
+    tenantId: string,
+    botId: string,
+  ): Promise<string> {
+    const secret = generateWebhookSecret();
+    await tx.bot.update({
+      where: { id: botId, tenantId },
+      data: { secretEncrypted: this.secrets.seal(botId, secret) },
+    });
+    return secret;
   }
 
   private async recordAudit(

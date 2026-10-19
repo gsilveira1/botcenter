@@ -7,7 +7,6 @@ import { LockNotAcquiredError } from '../../services/lock.service';
 import type { DistributedLockService, Lock } from '../../services/lock.service';
 import { conversationLockName } from '../conversation-keys';
 import { ConversationMetrics } from '../conversation-metrics';
-import type { BotHttpService } from './bot-http';
 import { CONVERSATION_LOCK, ConversationRuntime } from './conversation-runtime.service';
 import type { ConversationStepService } from './conversation-step.service';
 import type { InstanceContext, InstanceResolver } from './instance-context';
@@ -43,27 +42,23 @@ function build(pages: ReturnType<typeof row>[][]) {
     extend: vi.fn(async () => true),
   };
   const steps = {
-    applyMessage: vi.fn(async (_instance: unknown, message: { id: string }) => [
-      { tenantId: 't1', url: `https://hook.test/${message.id}`, body: {} },
-    ]),
-    applyTimer: vi.fn(async () => []),
+    applyMessage: vi.fn(async (_instance: unknown, _message: { id: string }) => undefined),
+    applyTimer: vi.fn(async () => undefined),
   };
   const instances = { byId: vi.fn(async () => instance) };
-  const http = { callWebhooks: vi.fn(async () => undefined) };
   const runtime = new ConversationRuntime(
     prisma,
     locks as unknown as DistributedLockService,
     steps as unknown as ConversationStepService,
     instances as unknown as InstanceResolver,
-    http as unknown as BotHttpService,
     new ConversationMetrics(new MetricsService(testEnv())),
   );
-  return { runtime, locks, steps, http, findMany, findUnique, instances };
+  return { runtime, locks, steps, findMany, findUnique, instances };
 }
 
 describe('ConversationRuntime.drain', () => {
-  it('processes the pending rows in order under the lock, then runs the webhooks after the lock', async () => {
-    const { runtime, locks, steps, http, findMany } = build([[row('a'), row('b')]]);
+  it('processes the pending rows in order under the lock', async () => {
+    const { runtime, locks, steps, findMany } = build([[row('a'), row('b')]]);
     await runtime.drain(instance, '5511987654321');
     expect(locks.withLock).toHaveBeenCalledWith(
       conversationLockName('i1', '5511987654321'),
@@ -78,10 +73,6 @@ describe('ConversationRuntime.drain', () => {
       'b',
     ]);
     expect(locks.extend).toHaveBeenCalledTimes(2);
-    expect(http.callWebhooks).toHaveBeenCalledWith([
-      expect.objectContaining({ url: 'https://hook.test/a' }),
-      expect.objectContaining({ url: 'https://hook.test/b' }),
-    ]);
   });
 
   it('reads again while a page is full', async () => {

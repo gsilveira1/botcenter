@@ -1,9 +1,10 @@
-import { Body, Controller, Get, HttpCode, Param, Put } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Put } from '@nestjs/common';
 import { BotIdParam, BotResponse, ProblemDetails } from '@botcenter/contracts';
 import { Auth } from '../auth/auth-context';
 import type { AuthContext } from '../auth/auth-context';
 import { RequireScope } from '../auth/decorators';
 import { createZodDto } from '../common/zod-dto';
+import { SkipIdempotency } from '../idempotency/idempotency.interceptor';
 import { ApiOperation, ApiResponse } from '../openapi/openapi.decorators';
 import { PutBotBodySchema } from './bot-request';
 import { BotsService } from './bots.service';
@@ -19,6 +20,7 @@ export class BotsController {
   @Put(':id')
   @HttpCode(200)
   @RequireScope('bots:write')
+  @SkipIdempotency()
   @ApiOperation({
     summary: 'Create a bot or publish a new version of its definition',
     description:
@@ -27,7 +29,10 @@ export class BotsController {
       '`instance_ids` is the full list of instances that the bot serves (an instance has at most one ' +
       'bot; an instance of another bot moves to this bot). A definition that is not valid gives 422 ' +
       '`BOT_DEFINITION_INVALID` with one error for each path. A key with an instance list gets 403 ' +
-      '`INSTANCE_NOT_ALLOWED` when the bot serves an instance outside that list.',
+      '`INSTANCE_NOT_ALLOWED` when the bot serves an instance outside that list. The response of the ' +
+      'create has `signing_secret` one time: it signs the `external` and `call_webhook` requests of ' +
+      'the bot like a webhook. This route ignores Idempotency-Key, because the response can contain ' +
+      'the secret.',
   })
   @ApiResponse(200, { description: 'The bot with its current version', schema: BotResponseDto })
   @ApiResponse(422, {
@@ -49,5 +54,21 @@ export class BotsController {
   @ApiResponse(200, { description: 'The bot with its current version', schema: BotResponseDto })
   get(@Auth() auth: AuthContext, @Param() params: BotParams) {
     return this.bots.get(auth, params.id);
+  }
+
+  @Post(':id/rotate-secret')
+  @HttpCode(200)
+  @RequireScope('bots:write')
+  @SkipIdempotency()
+  @ApiOperation({
+    summary: 'Rotate the signing secret of a bot',
+    description:
+      'Returns a new `signing_secret` one time. For 24 h, each `external` and `call_webhook` request ' +
+      'of the bot has two v1= signatures (new and old). This route ignores Idempotency-Key, because the ' +
+      'response contains the secret.',
+  })
+  @ApiResponse(200, { description: 'Rotated', schema: BotResponseDto })
+  rotateSecret(@Auth() auth: AuthContext, @Param() params: BotParams) {
+    return this.bots.rotateSecret(auth, params.id);
   }
 }

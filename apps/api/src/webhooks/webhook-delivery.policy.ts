@@ -46,20 +46,23 @@ export interface SignedDeliveryRequest {
 }
 
 /**
- * Builds the body and the headers of one delivery. The body is the event envelope; the signature covers
- * the exact body bytes. With two secrets (a rotation in progress), the header has two `v1=` values.
+ * Builds the body and the headers of one signed request (a webhook delivery, a bot `call_webhook`, or a
+ * bot `external` condition). `id` is the `Webhook-Id` header: the event id, or the id of the call. The
+ * signature covers the exact body bytes (`JSON.stringify(payload)`, the same bytes that the external HTTP
+ * client sends). With two secrets (a rotation in progress), the header has two `v1=` values.
  */
 export function buildSignedRequest(
-  envelope: { id: string },
+  id: string,
+  payload: unknown,
   secrets: readonly string[],
   nowSeconds: number,
 ): SignedDeliveryRequest {
-  const body = JSON.stringify(envelope);
+  const body = JSON.stringify(payload ?? null);
   const signature = secrets.map((secret) => signWebhook(secret, nowSeconds, body)).join(' ');
   return {
     body,
     headers: {
-      [WEBHOOK_ID_HEADER]: envelope.id,
+      [WEBHOOK_ID_HEADER]: id,
       [WEBHOOK_TIMESTAMP_HEADER]: String(nowSeconds),
       [WEBHOOK_SIGNATURE_HEADER]: signature,
     },

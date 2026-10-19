@@ -12,6 +12,13 @@ export interface ExternalHttpRequest {
   timeoutMs: number;
   /** Extra headers, for example the webhook signature headers. */
   headers?: Record<string, string>;
+  /**
+   * `true`: read at most the response limit and keep the status when the body is larger (a delivery needs
+   * only the status). Default `false`: a larger body is `response_too_large`.
+   */
+  discardLargeBody?: boolean;
+  /** The response limit of this call, in bytes. Default: the limit of the client. */
+  maxResponseBytes?: number;
 }
 
 export interface ExternalHttpResponse {

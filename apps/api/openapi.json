@@ -204,7 +204,7 @@
           "bots"
         ],
         "summary": "Create a bot or publish a new version of its definition",
-        "description": "`{id}` is a slug that the client chooses. A new version is published only when the definition changed. Open conversations stay on their version; new conversations use the new version. `instance_ids` is the full list of instances that the bot serves (an instance has at most one bot; an instance of another bot moves to this bot). A definition that is not valid gives 422 `BOT_DEFINITION_INVALID` with one error for each path. A key with an instance list gets 403 `INSTANCE_NOT_ALLOWED` when the bot serves an instance outside that list.",
+        "description": "`{id}` is a slug that the client chooses. A new version is published only when the definition changed. Open conversations stay on their version; new conversations use the new version. `instance_ids` is the full list of instances that the bot serves (an instance has at most one bot; an instance of another bot moves to this bot). A definition that is not valid gives 422 `BOT_DEFINITION_INVALID` with one error for each path. A key with an instance list gets 403 `INSTANCE_NOT_ALLOWED` when the bot serves an instance outside that list. The response of the create has `signing_secret` one time: it signs the `external` and `call_webhook` requests of the bot like a webhook. This route ignores Idempotency-Key, because the response can contain the secret.",
         "security": [
           {
             "apiKey": []
@@ -221,17 +221,6 @@
             "schema": {
               "type": "string",
               "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
-            }
-          },
-          {
-            "name": "Idempotency-Key",
-            "in": "header",
-            "required": false,
-            "description": "The same key with the same request returns the stored response for 24 h.",
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 255
             }
           }
         ],
@@ -300,6 +289,124 @@
             "description": "The definition is not valid (`BOT_DEFINITION_INVALID`, `errors` has the paths)",
             "content": {
               "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit of the API key (`RATE_LIMITED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (Problem Details)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/bots/{id}/rotate-secret": {
+      "post": {
+        "operationId": "Bots_rotateSecret",
+        "tags": [
+          "bots"
+        ],
+        "summary": "Rotate the signing secret of a bot",
+        "description": "Returns a new `signing_secret` one time. For 24 h, each `external` and `call_webhook` request of the bot has two v1= signatures (new and old). This route ignores Idempotency-Key, because the response contains the secret.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "x-required-scopes": [
+          "bots:write"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rotated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid (`VALIDATION_FAILED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key (`UNAUTHENTICATED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or instance not allowed (`SCOPE_MISSING`, `INSTANCE_NOT_ALLOWED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict (`IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_IN_PROGRESS`) or state conflict",
+            "content": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
                 }
@@ -2448,6 +2555,10 @@
             "type": "string",
             "format": "date-time",
             "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "signing_secret": {
+            "type": "string",
+            "pattern": "^whsec_[A-Za-z0-9_-]{43}$"
           }
         },
         "required": [

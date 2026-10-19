@@ -5,6 +5,7 @@ import { Prisma } from '../../generated/prisma/client';
 import type { OutboundMessagesPort } from '../../ports/outbound-messages.port';
 import type { PrismaService } from '../../prisma/prisma.service';
 import { OutboxService } from '../../services/outbox.service';
+import type { BotWebhookCallsService } from '../../webhooks/bot-webhook-calls.service';
 import { ConversationWriter } from './conversation-writer.service';
 import { WriteConflictError } from './step-plan';
 import type { StepPlan } from './step-plan';
@@ -75,8 +76,18 @@ function build() {
     createInTx: vi.fn(async () => ({ messageId: 'reply-1' })),
     dispatch: vi.fn(),
   } satisfies OutboundMessagesPort;
-  const writer = new ConversationWriter(prisma, new OutboxService(), outbound);
-  return { writer, tx, outbound };
+  const botCalls = {
+    createInTx: vi.fn(async (_tx: unknown, calls: unknown[]) =>
+      calls.map((_call, index) => ({ id: `w${index}`, tenantId: TENANT, nextAttemptAt: null })),
+    ),
+  };
+  const writer = new ConversationWriter(
+    prisma,
+    new OutboxService(),
+    outbound,
+    botCalls as unknown as BotWebhookCallsService,
+  );
+  return { writer, tx, outbound, botCalls };
 }
 
 describe('ConversationWriter', () => {
@@ -116,6 +127,28 @@ describe('ConversationWriter', () => {
       { tenantId: TENANT, messageId: 'reply-1', instanceId: INSTANCE },
     ]);
     expect(outcome.record).toMatchObject({ state: 'b', version: 5, variables: { nome: 'Ana' } });
+  });
+
+  it('writes each call_webhook action as a row in the step transaction (ARCH-04)', async () => {
+    const { writer, tx, botCalls } = build();
+    const outcome = await writer.write(
+      plan({
+        result: result({
+          actions: [
+            { type: 'call_webhook', url: 'https://hook.test/a', variables: { nome: 'Bia' } },
+          ],
+        }),
+      }),
+    );
+    expect(botCalls.createInTx).toHaveBeenCalledWith(tx, [
+      expect.objectContaining({
+        tenantId: TENANT,
+        conversationId: CONVERSATION,
+        url: 'https://hook.test/a',
+        payload: expect.objectContaining({ state: 'b', variables: { nome: 'Bia' } }),
+      }),
+    ]);
+    expect(outcome.webhookCalls).toEqual([{ id: 'w0', tenantId: TENANT, nextAttemptAt: null }]);
   });
 
   it('throws WriteConflictError when the version changed', async () => {

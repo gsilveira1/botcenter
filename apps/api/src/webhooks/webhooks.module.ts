@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ExternalHttpModule } from '../external-http/external-http.module';
+import { BotWebhookCallsService } from './bot-webhook-calls.service';
 import { MaintenanceWorkerModule } from '../maintenance/maintenance.module';
 import { OutboxDispatcher } from './outbox-dispatcher';
 import { OutboxLagCollector } from './outbox-lag';
@@ -14,6 +15,17 @@ import { WebhookSecrets } from './webhook-secrets';
 import { WebhookSubscriptionsService } from './webhook-subscriptions.service';
 import { WebhookSweepTask } from './webhook-sweep.task';
 import { WebhooksController } from './webhooks.controller';
+
+/**
+ * The `call_webhook` rows of the bots and the bot request signature (ARCH-04, SEC-06), for the
+ * conversations worker (`createInTx`, `dispatch`, `signedHeaders`) and the bots routes (`WebhookSecrets`).
+ * The delivery of the rows is in `WebhooksWorkerModule` (the `webhooks` queue).
+ */
+@Module({
+  providers: [WebhookSecrets, WebhookDeliveryJobs, BotWebhookCallsService],
+  exports: [WebhookSecrets, BotWebhookCallsService],
+})
+export class BotWebhookCallsModule {}
 
 /**
  * API process: the `/v1/webhooks` routes and the outbox lag gauge. `ExternalHttpModule` (global) comes
@@ -33,7 +45,8 @@ import { WebhooksController } from './webhooks.controller';
 export class WebhooksApiModule {}
 
 /**
- * Worker process: the outbox dispatcher loop, the `webhooks` consumer, and the delivery sweep task.
+ * Worker process: the outbox dispatcher loop, the `webhooks` consumer (webhook deliveries and bot calls),
+ * and the delivery sweep task.
  * It imports `MaintenanceWorkerModule` (the `maintenance` queue) and `ExternalHttpModule`.
  * Tests replace `WEBHOOK_DELIVERY_SETTINGS` (short retry delays and time limit).
  */

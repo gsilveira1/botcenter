@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { BotDefinition } from './bot-definition.js';
 import { BotId, IsoDateTime, Uuid } from './common.js';
+import { WebhookSecret } from './webhooks.js';
 
 export const BOT_INSTANCES_MAX = 100;
 
@@ -45,5 +46,11 @@ export const BotResponse = z.object({
   instance_ids: z.array(Uuid),
   created_at: IsoDateTime,
   updated_at: IsoDateTime,
+  /**
+   * The secret that signs the `external` and `call_webhook` requests of the bot (the webhook signature:
+   * `Webhook-Id`, `Webhook-Timestamp`, `Webhook-Signature`). Only the response of the create and of
+   * `POST /v1/bots/{id}/rotate-secret` has it, one time.
+   */
+  signing_secret: WebhookSecret.optional(),
 });
 export type BotResponse = z.infer<typeof BotResponse>;

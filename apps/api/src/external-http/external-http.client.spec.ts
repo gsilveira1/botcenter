@@ -93,6 +93,19 @@ describe('ExternalHttpClient.postJson', () => {
     expect(error.code).toBe('response_too_large');
   });
 
+  it('keeps the status of a large response when the caller discards the large body', async () => {
+    receiver.next(respond(202, 'x'.repeat(5_000)));
+    await expect(
+      clientWith().postJson({
+        url: receiver.url,
+        body: {},
+        timeoutMs: 2_000,
+        discardLargeBody: true,
+        maxResponseBytes: 100,
+      }),
+    ).resolves.toEqual({ status: 202, json: null });
+  });
+
   it('stops at the time limit', async () => {
     receiver.next(hang());
     const started = Date.now();
