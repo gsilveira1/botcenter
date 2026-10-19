@@ -108,6 +108,52 @@ describe('env templates', () => {
     expect(api.get('DATABASE_URL')).toContain('botcenter_app:');
   });
 
+  /**
+   * The keys of `EnvSchema` in apps/api/src/config/env.ts, read from the source (no build needed). Other
+   * slices add keys, so the test never uses a fixed list.
+   */
+  function envSchemaKeys(): string[] {
+    const source = readRepoFile('apps/api/src/config/env.ts');
+    const start = source.indexOf('export const EnvSchema = z.object({');
+    const end = source.indexOf('\n});', start);
+    expect(start, 'EnvSchema in env.ts').toBeGreaterThan(-1);
+    const body = source.slice(start, end);
+    return [...body.matchAll(/^ {2}([A-Z][A-Z0-9_]*):/gm)].map((match) => match[1]!);
+  }
+
+  /** The variables that compose.prod.yml sets in `environment:` of the api and worker services. */
+  function composeAppVariables(): Set<string> {
+    const compose = readYaml<{ services: Record<string, { environment?: Record<string, string> }> }>(
+      'infra/compose/compose.prod.yml',
+    );
+    return new Set(
+      ['api', 'worker'].flatMap((name) => Object.keys(compose.services[name]?.environment ?? {})),
+    );
+  }
+
+  it('lists every variable of the env schema in api.env.example or in compose.prod.yml (ARCH-05, ARCH-21)', () => {
+    const keys = envSchemaKeys();
+    expect(keys.length).toBeGreaterThan(30);
+    const api = readEnvFile(readRepoFile('infra/env/api.env.example'));
+    const compose = composeAppVariables();
+    const missing = keys.filter((key) => !api.has(key) && !compose.has(key));
+    expect(missing, 'add these names to infra/env/api.env.example').toEqual([]);
+  });
+
+  it('lists no variable in api.env.example that the env schema does not know', () => {
+    const keys = new Set(envSchemaKeys());
+    const unknown = [...readEnvFile(readRepoFile('infra/env/api.env.example')).keys()].filter(
+      (name) => !keys.has(name),
+    );
+    expect(unknown).toEqual([]);
+  });
+
+  it('sets the browser origins of the connect stream in production (ARCH-05)', () => {
+    const api = readEnvFile(readRepoFile('infra/env/api.env.example'));
+    expect(api.get('CONNECT_ALLOWED_ORIGINS')).toBe('https://CHANGE_ME');
+    expect(api.get('EXTERNAL_HTTP_ALLOW_PRIVATE')).toBe('false');
+  });
+
   it('uses the same Evolution key in the API and in the Evolution container', () => {
     const api = readEnvFile(readRepoFile('infra/env/api.env.example'));
     const evolution = readEnvFile(readRepoFile('infra/env/evolution.env.example'));

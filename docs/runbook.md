@@ -126,6 +126,10 @@ ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `
 
    The script writes `/etc/botcenter/*.env` with mode 600. Each secret is 32 random bytes: the PostgreSQL passwords, the Redis password, the Evolution API key, the internal webhook secret, the API key pepper, the data encryption key, and the restic password. It never prints a secret. It lists the `CHANGE_ME` values that you must set.
 2. Edit each file that the script lists (`sudo -e /etc/botcenter/api.env`, and the others).
+
+   In `api.env`, set `CONNECT_ALLOWED_ORIGINS` to the origin of each client frontend that opens the connect event stream, for example `CONNECT_ALLOWED_ORIGINS=https://app.personallife.com.br`. Use a comma between two origins. Write the origin only: scheme, host, and port, with no path and no `/` at the end.
+
+   CAUTION: Without the origin of the frontend, the browser blocks the connect event stream. The user then never sees the QR code or the pairing code.
 3. Put `RESTIC_PASSWORD` of `/etc/botcenter/restic.env` in the password manager of the team.
 
    WARNING: Without `RESTIC_PASSWORD`, no backup can be restored. A lost host also loses this file.
@@ -169,6 +173,7 @@ Optional: SOPS and age. Keep the env files encrypted in a private infrastructure
    - `curl -s https://<api host>/health/ready` answers `{"status":"ok",...}`.
    - `curl -s -o /dev/null -w '%{http_code}' https://<api host>/metrics` answers `404`.
    - `curl -s -o /dev/null -w '%{http_code}' https://<api host>/internal/evolution/webhook` answers `404`.
+   - `curl -s -D - -o /dev/null -H 'Origin: https://app.personallife.com.br' https://<api host>/v1/connect/ct_test/events` answers `401` with the header `access-control-allow-origin: https://app.personallife.com.br`. Use the origin of `CONNECT_ALLOWED_ORIGINS`.
 9. Turn on the timers:
 
    ```sh
@@ -479,3 +484,34 @@ Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_backup_las
 | 9464 | `worker` | Alloy (`internal`) |
 | 8080 | `evolution` | `api` and `worker` (`internal`) |
 | 5432, 6379 | `postgres`, `redis` | the `internal` network only |
+
+### 18.4 Settings of `api.env`
+
+`infra/env/api.env.example` lists every variable of `apps/api/src/config/env.ts` with its default value. A test of `tests/infra` fails when a variable of `env.ts` is not in the template. Compose sets `ROLE`, `PORT`, the metrics listeners, and `NODE_OPTIONS` for each service.
+
+| Variable | Default | Use |
+| --- | --- | --- |
+| `CONNECT_ALLOWED_ORIGINS` | empty | Browser origins (comma list) that can open `GET /v1/connect/{token}/events`. Required for the connect flow of a frontend. |
+| `PUBLIC_BASE_URL` | none in production | The public URL. The connect route builds `events_url` from it. |
+| `TRUST_PROXY` | `loopback,linklocal,uniquelocal` | Proxies that Fastify trusts for `X-Forwarded-For`. |
+| `BODY_LIMIT_BYTES` | `1048576` | Maximum JSON body of a request. |
+| `INTERNAL_WEBHOOK_BODY_LIMIT_BYTES` | `8388608` | Maximum body of the Evolution webhook. |
+| `KEEP_ALIVE_TIMEOUT_MS` | `65000` | Keep it above the upstream keep-alive of Caddy (60 s). |
+| `SHUTDOWN_TIMEOUT_MS` | `25000` | Maximum time of a graceful shutdown. Keep it below `stop_grace_period` of the service. |
+| `EVOLUTION_INTERACTIVE_FALLBACK` | `text` | `text` sends buttons and lists as a numbered menu; `native` sends the native messages. |
+| `EVOLUTION_REQUEST_TIMEOUT_MS` | `10000` | Time limit of a state, create, logout, delete, or ping request. |
+| `EVOLUTION_CONNECT_TIMEOUT_MS` | `20000` | Time limit of a connect request. |
+| `EVOLUTION_SEND_TIMEOUT_MS` | `30000` | Time limit of one send (plus the typing delay). |
+| `EVOLUTION_MEDIA_TIMEOUT_MS` | `60000` | Time limit of one media download. |
+| `WORKER_CONCURRENCY_OUTBOUND`, `_INBOUND`, `_WEBHOOKS` | `10` | Jobs of the queue that one worker process runs at the same time. |
+| `WORKER_CONCURRENCY_TIMERS` | `5` | The same for the `timers` queue. |
+| `WORKER_CONCURRENCY_MAINTENANCE` | `1` | The same for the `maintenance` queue (maximum 10). |
+| `WORKER_CONCURRENCY_INSTANCES` | `1` | The same for the `instances` queue (maximum 10). |
+| `OUTBOUND_BUCKET_BURST` | `3` | Size of the send token bucket of each instance (at most its rate). |
+| `OUTBOUND_WARMUP_DAYS` | `7` | Days from the first connection of a number to the full send rate. `0` or `1` turns the warm-up off. |
+| `OUTBOUND_WARMUP_START_PERCENT` | `20` | Send rate on the first day of the warm-up, in percent of the full rate. |
+| `MEDIA_UPLOAD_URL_TTL_SECONDS` | `900` | Validity of the upload URL of `POST /v1/media` (maximum 3600). |
+| `MEDIA_SEND_URL_TTL_SECONDS` | `900` | Validity of the download URL that the Evolution API gets for a media message. |
+| `EXTERNAL_HTTP_ALLOW_PRIVATE` | `false` | Test and development only. The API refuses to start with `true` in production. |
+| `EXTERNAL_HTTP_MAX_RESPONSE_BYTES` | `1048576` | Maximum response body of an external HTTP call (maximum 16 MiB). |
+| `OUTBOX_DISPATCH_INTERVAL_MS` | `1000` | Pause of the outbox dispatcher when no event waits. |
