@@ -22,7 +22,10 @@
     "admin:key:rotate": "node dist/scripts/admin.js key:rotate"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1152.0",
+    "@aws-sdk/s3-request-presigner": "^3.1152.0",
     "@botcenter/contracts": "workspace:*",
+    "@botcenter/engine": "workspace:*",
     "@botcenter/whatsapp-provider": "workspace:*",
     "@fastify/helmet": "^13.2.0",
     "@nestjs/common": "^11.1.0",
