@@ -128,6 +128,7 @@ export const EnvSchema = z.object({
   WORKER_CONCURRENCY_WEBHOOKS: positiveInt.max(200).default(10),
   WORKER_CONCURRENCY_TIMERS: positiveInt.max(200).default(5),
   WORKER_CONCURRENCY_MAINTENANCE: positiveInt.max(10).default(1),
+  WORKER_CONCURRENCY_INSTANCES: positiveInt.max(10).default(1),
 });
 
 export type AppEnv = z.infer<typeof EnvSchema>;
