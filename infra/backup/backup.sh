@@ -9,7 +9,12 @@
 #   2. `pg_dump -Fc -Z0` of each database to BACKUP_WORK_DIR (restic compresses and deduplicates).
 #   3. `pg_restore --list` of each dump: a damaged dump stops the backup before the upload.
 #   4. `restic backup` (one snapshot, tag `postgres`; restic encrypts before the upload).
-#   5. `restic forget --keep-daily 7 --keep-weekly 4 --prune`.
+#   5. `restic forget --keep-within <BACKUP_LOCK_DAYS>d --keep-weekly 8 --prune --max-unused unlimited`
+#      with RESTIC_RETENTION_ENV_FILE (default: RESTIC_ENV_FILE). SEC-13: the R2 bucket lock refuses the
+#      delete of data/, snapshots/, keys/, and config for BACKUP_LOCK_DAYS days (docs/runbook.md,
+#      procedure "Cloudflare R2"). So this step forgets only snapshots older than the lock, and prune
+#      deletes only packs that no kept snapshot uses (no repack, so no new pack replaces a locked one).
+#      A thief of the host credentials cannot delete the backups of the last BACKUP_LOCK_DAYS days.
 #   6. On BACKUP_CHECK_WEEKDAY: `restic check --read-data-subset=10%`.
 #   7. Text file metrics for Alloy and a heartbeat to the Uptime Kuma push monitor.
 # A failure at any step sends a Discord alert, writes botcenter_backup_last_run_success 0, and exits 1.
@@ -89,7 +94,14 @@ log "restic backup (host ${BACKUP_HOST_TAG}, tag postgres)"
 restic_run --data "$work_dir" backup --host "$BACKUP_HOST_TAG" --tag postgres --no-scan /data
 
 step="restic forget"
-restic_run forget --host "$BACKUP_HOST_TAG" --tag postgres --keep-daily 7 --keep-weekly 4 --prune
+lock_days="${BACKUP_LOCK_DAYS:-35}"
+[[ "$lock_days" =~ ^[1-9][0-9]*$ ]] || {
+  log_error "BACKUP_LOCK_DAYS must be a number of days (the retention of the R2 bucket lock)"
+  exit 1
+}
+RESTIC_ENV_FILE="${RESTIC_RETENTION_ENV_FILE:-$RESTIC_ENV_FILE}" restic_run forget \
+  --host "$BACKUP_HOST_TAG" --tag postgres --keep-within "${lock_days}d" --keep-weekly 8 \
+  --prune --max-unused unlimited
 
 if [[ "$(date +%u)" == "${BACKUP_CHECK_WEEKDAY:-7}" ]]; then
   step="restic check"

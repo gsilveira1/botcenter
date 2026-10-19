@@ -400,3 +400,58 @@ describe('deploy.sh and the release workflow (SEC-12)', () => {
     expect(release).toContain('ghcr\\.io/${OWNER}/botcenter-api:${TAG}@sha256:[0-9a-f]{64}$');
   });
 });
+
+describe('backup.sh retention (SEC-13)', () => {
+  /** A fake `docker`: one postgres container, a dump of 4 KiB, and a log of each `docker run`. */
+  function fakeDocker(log: string): string {
+    const bin = tempDir('bin-backup');
+    writeFileSync(
+      path.join(bin, 'docker'),
+      `#!/bin/sh
+case "$1" in
+  ps) echo postgres-id ;;
+  exec)
+    case " $* " in
+      *" pg_dump "*) head -c 4096 /dev/zero ;;
+      *) cat >/dev/null ;;
+    esac ;;
+  run) echo "$*" >>'${log}' ;;
+esac
+exit 0
+`,
+    );
+    chmodSync(path.join(bin, 'docker'), 0o755);
+    return bin;
+  }
+
+  it('forgets only snapshots older than the bucket lock, without a repack, with the retention key', async () => {
+    const work = tempDir('backup-retention');
+    const log = path.join(work, 'docker-run.log');
+    writeFileSync(path.join(work, 'restic.env'), 'RESTIC_REPOSITORY=s3:http://127.0.0.1:1/none\n');
+    writeFileSync(
+      path.join(work, 'retention.env'),
+      'RESTIC_REPOSITORY=s3:http://127.0.0.1:1/none\n',
+    );
+    const result = await run(repoPath('infra/backup/backup.sh'), [], {
+      PATH: `${fakeDocker(log)}:${process.env.PATH}`,
+      RESTIC_ENV_FILE: path.join(work, 'restic.env'),
+      RESTIC_RETENTION_ENV_FILE: path.join(work, 'retention.env'),
+      RESTIC_HOST_CACHE_DIR: path.join(work, 'cache'),
+      BACKUP_HOST_TAG: 'test-host',
+      BACKUP_WORK_DIR: path.join(work, 'work'),
+      METRICS_DIR: path.join(work, 'metrics'),
+      DISK_ALERT_PERCENT: '100',
+      BACKUP_CHECK_WEEKDAY: '9',
+      ALERT_DISCORD_WEBHOOK_URL: '',
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const runs = readFileSync(log, 'utf8').trim().split('\n');
+    const backup = runs.find((line) => / backup /.test(line))!;
+    const forget = runs.find((line) => / forget /.test(line))!;
+    expect(backup).toContain(`--env-file ${path.join(work, 'restic.env')}`);
+    expect(forget).toContain(`--env-file ${path.join(work, 'retention.env')}`);
+    expect(forget).toContain('--keep-within 35d');
+    expect(forget).toContain('--prune --max-unused unlimited');
+    expect(forget).not.toMatch(/--keep-daily/);
+  });
+});

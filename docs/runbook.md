@@ -95,9 +95,14 @@ ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `
 1. R2 > Create bucket `botcenter-media` (location hint: the region of the users). It stays private. The API gives pre-signed URLs with a short validity.
 2. Add a lifecycle rule to `botcenter-media`: delete objects after the longest `retentionDays` of the tenants (default 90 days). Add a rule to abort incomplete multipart uploads after 1 day.
 3. Create bucket `botcenter-backups`. Add a rule to abort incomplete multipart uploads after 1 day. Do not add a delete rule: restic removes old snapshots (`forget --prune`).
+
+   Add bucket lock rules (R2 > `botcenter-backups` > Settings > Bucket lock rules, SEC-13), each with the retention "age 35 days": prefixes `data/`, `snapshots/`, `keys/`, and the object `config`. Do not lock `index/` and `locks/`: restic deletes them during normal work. R2 then refuses to delete or overwrite a locked object, also for a token with the delete right. A thief of the host credentials cannot delete the backups of the last 35 days. Keep `BACKUP_LOCK_DAYS` in `backup.env` equal to the lock days.
+
+   CAUTION: The lock also applies to you. A snapshot cannot be deleted before 35 days. The storage cost includes these 35 days.
 4. R2 > Manage API tokens: make two tokens with "Object Read & Write", each for one bucket only.
    - Media token: `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` in `api.env`.
-   - Backup token: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `restic.env`.
+   - Backup token: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `restic.env`. R2 has no token type without the delete right; the bucket lock of step 3 is the protection.
+   - Retention token (optional): a second "Object Read & Write" token for `forget --prune`, in a separate file (for example `/etc/botcenter/restic-retention.env`, mode 600) and `RESTIC_RETENTION_ENV_FILE` in `backup.env`. Without it, `backup.sh` uses `restic.env`. The forget step keeps every snapshot of the last `BACKUP_LOCK_DAYS` days (`--keep-within`), and prune deletes only packs that no kept snapshot uses (`--max-unused unlimited`, no repack). So the retention never needs to delete a locked object.
 5. Set `S3_ENDPOINT` (`api.env`) and the host of `RESTIC_REPOSITORY` (`restic.env`) to `https://<account id>.r2.cloudflarestorage.com`.
 
 ## 5. Grafana Cloud
