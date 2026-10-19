@@ -21,38 +21,26 @@ import type { Instance } from '../../src/generated/prisma/client';
 import { inboundJobId } from '../../src/inbound/inbound-ingest.service';
 import { QueuesService } from '../../src/queues/queues.service';
 import { DistributedLockService } from '../../src/services/lock.service';
-import {
-  FakeExternalHttp,
-  FakeOutboundMessages,
-  conversationPortsModule,
-} from '../support/conversation-ports';
+import { FakeExternalHttp, conversationPortsModule } from '../support/conversation-ports';
 import { TestHarness } from '../support/harness';
-import { startMinio } from '../support/minio';
-import type { TestMinio } from '../support/minio';
 import { waitFor } from '../support/wait-for';
 
 let h: TestHarness;
-let minio: TestMinio;
 let worker: TestingModule;
-const outbound = new FakeOutboundMessages();
 const http = new FakeExternalHttp();
 
+// The real outbound port of the messages slice writes and sends the replies (fake Evolution over HTTP).
 beforeAll(async () => {
-  minio = await startMinio();
   h = await TestHarness.start({
     fakeEvolution: true,
+    minio: true,
     modules: [ConversationsApiModule],
-    env: minio.env,
   });
-  worker = await h.startWorker([
-    ConversationsWorkerModule,
-    conversationPortsModule(outbound, http),
-  ]);
+  worker = await h.startWorker([ConversationsWorkerModule, conversationPortsModule(http)]);
 });
 
 afterAll(async () => {
   await h?.close();
-  await minio?.stop();
 });
 
 interface Setup {
@@ -66,12 +54,13 @@ const nextContact = () => `55119876${String(5000 + (contactSeq += 1)).padStart(5
 
 async function setup(definition: BotDefinitionInput = personalTrainerOnboarding): Promise<Setup> {
   const tenant = await h.createTenant();
-  const instance = await h.createInstance(tenant.id);
+  const instance = await h.createInstance(tenant.id, { status: 'connected' });
   await h.whatsapp.createInstance({
     name: instance.providerName,
     webhookUrl: h.webhookUrl,
     webhookSecret: h.env.EVOLUTION_WEBHOOK_SECRET,
   });
+  h.evolution.setState(instance.providerName, 'open', '5511912345678');
   const { key } = await h.createApiKey({ tenantId: tenant.id, scopes: ['bots:write'] });
   const put = await putBot(key, definition, [instance.id]);
   expect(put.statusCode).toBe(200);
@@ -108,8 +97,12 @@ function conversation(s: Setup, contact: string) {
   });
 }
 
+/** The bot replies of a conversation: outbound rows that the real outbound port wrote. */
 function repliesOf(conversationId: string) {
-  return outbound.created.filter((reply) => reply.conversationId === conversationId);
+  return h.prisma.message.findMany({
+    where: { conversationId, direction: 'outbound' },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
 }
 
 const timers = () => h.get(QueuesService).get('timers');
@@ -134,10 +127,15 @@ describe('message.received with a bot', () => {
     await say(s, contact, 'Oi');
     const started = await conversation(s, contact);
     expect(started).toMatchObject({ state: 'inicio', botVersion: 1, version: 0 });
-    const [welcome] = repliesOf(started.id);
-    expect(welcome).toMatchObject({ priority: 'reply', to: contact, content: { type: 'buttons' } });
+    const [welcome] = await repliesOf(started.id);
+    expect(welcome).toMatchObject({ priority: 'reply', contact, content: { type: 'buttons' } });
     expect(welcome!.typingDelayMs).toBeGreaterThanOrEqual(800);
-    expect(outbound.dispatched.map((d) => d.messageId)).toContain(welcome!.messageId);
+    // The outbound worker of the messages slice sends the reply (dispatched after the commit).
+    await waitFor(async () =>
+      ['sent', 'delivered', 'read'].includes(
+        (await h.prisma.message.findUniqueOrThrow({ where: { id: welcome!.id } })).status,
+      ),
+    );
     expect(await timers().getJob(timerJobId(started.id, 0))).toBeDefined();
 
     // "1" answers the text menu: the button "comecar".
@@ -153,7 +151,7 @@ describe('message.received with a bot', () => {
     expect((await putBot(s.key, v2, [s.instance.id])).json().version).toBe(2);
 
     await say(s, contact, 'Ana');
-    expect(repliesOf(started.id).at(-1)?.content).toMatchObject({ type: 'list' });
+    expect((await repliesOf(started.id)).at(-1)?.content).toMatchObject({ type: 'list' });
     await say(s, contact, 'emagrecer'); // the title of a list row, without case
     await say(s, contact, '3');
     await say(s, contact, '72,5');
@@ -244,7 +242,7 @@ describe('message.received with a bot', () => {
     await fireTimer(started.id, 0);
     const reminded = await conversation(s, contact);
     expect(reminded).toMatchObject({ state: 'lembrete', version: 1 });
-    expect(repliesOf(started.id).at(-1)?.content).toMatchObject({ type: 'text' });
+    expect((await repliesOf(started.id)).at(-1)?.content).toMatchObject({ type: 'text' });
     const last = await h.prisma.conversationTransition.findFirstOrThrow({
       where: { conversationId: started.id },
       orderBy: { createdAt: 'desc' },
@@ -260,10 +258,10 @@ describe('message.received with a bot', () => {
     await say(s, contact, '2'); // "Falar com o personal": the state "humano" has a handoff action
     const human = await conversation(s, contact);
     expect(human).toMatchObject({ state: 'humano', handoff: true });
-    const replies = repliesOf(human.id).length;
+    const replies = (await repliesOf(human.id)).length;
 
     await say(s, contact, 'Alguém aí?');
-    expect(repliesOf(human.id)).toHaveLength(replies);
+    expect(await repliesOf(human.id)).toHaveLength(replies);
     expect(await conversation(s, contact)).toMatchObject({ version: human.version });
 
     const back = await h.inject({

@@ -14,7 +14,7 @@ import type {
 import type { TransactionClient } from '../../src/prisma/prisma.service';
 
 /**
- * A fake of the messages slice port: it writes a real `messages` row (outbound, `queued`) in the
+ * A fake of the messages slice port (for a worker without `MessagesCoreModule`): it writes a real `messages` row (outbound, `queued`) in the
  * transaction of the caller, so a rollback removes it, and records the inputs and the dispatches.
  */
 export class FakeOutboundMessages implements OutboundMessagesPort {
@@ -72,19 +72,21 @@ export class FakeExternalHttp implements ExternalHttpPort {
   }
 }
 
-/** A global module that binds the two fake ports for the worker of a test. */
+/**
+ * A global module that binds the fake `EXTERNAL_HTTP` port (the webhooks slice implements the real one).
+ * `OUTBOUND_MESSAGES` comes from the global `MessagesCoreModule` of the worker; pass a fake only for a
+ * worker without that module.
+ */
 export function conversationPortsModule(
-  outbound: FakeOutboundMessages,
   http: FakeExternalHttp,
+  outbound?: FakeOutboundMessages,
 ): Type {
+  const providers = [
+    { provide: EXTERNAL_HTTP, useValue: http },
+    ...(outbound ? [{ provide: OUTBOUND_MESSAGES, useValue: outbound }] : []),
+  ];
   @Global()
-  @Module({
-    providers: [
-      { provide: OUTBOUND_MESSAGES, useValue: outbound },
-      { provide: EXTERNAL_HTTP, useValue: http },
-    ],
-    exports: [OUTBOUND_MESSAGES, EXTERNAL_HTTP],
-  })
+  @Module({ providers, exports: providers.map((provider) => provider.provide) })
   class ConversationPortsTestModule {}
   return ConversationPortsTestModule;
 }
