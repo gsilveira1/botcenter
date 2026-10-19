@@ -1,0 +1,18 @@
+packages:
+  - apps/*
+  - packages/*
+  - prisma
+  - tests/*
+
+# Native modules and engines that must run their build scripts (pnpm 10 blocks them by default).
+onlyBuiltDependencies:
+  - '@prisma/engines'
+  - '@swc/core'
+  - esbuild
+  - prisma
+  - protobufjs
+
+# Optional native modules of testcontainers (ssh2). The tests do not use SSH tunnels.
+ignoredBuiltDependencies:
+  - cpu-features
+  - ssh2

@@ -1,9 +1,27 @@
+# dependencies
 node_modules/
+.pnpm-store/
+
+# build output
 dist/
 .turbo/
 coverage/
+*.tsbuildinfo
+
+# logs
 *.log
+
+# environment
 .env
 .env.*
 !.env.example
+
+# generated
 apps/api/src/generated/
+
+# os / editor
+.DS_Store
+*:Zone.Identifier
+.idea/
+.vscode/*
+!.vscode/extensions.json
