@@ -140,7 +140,24 @@ export const EnvSchema = z.object({
   MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(900),
   /** Validity of the pre-signed download URL that the provider gets for a media message. */
   MEDIA_SEND_URL_TTL_SECONDS: positiveInt.max(86_400).default(900),
+
+  /**
+   * Test and development only: the SSRF guard of the external HTTP client accepts private, loopback, and
+   * link-local addresses. `loadEnv` refuses `true` when `NODE_ENV=production`.
+   */
+  EXTERNAL_HTTP_ALLOW_PRIVATE: booleanString.default(false),
+  /** Maximum response body of an external HTTP call (the `external` condition of the engine). */
+  EXTERNAL_HTTP_MAX_RESPONSE_BYTES: positiveInt.max(16 * MIB).default(MIB),
+  /** Pause of the outbox dispatcher of the worker when no event waits. */
+  OUTBOX_DISPATCH_INTERVAL_MS: positiveInt.max(60_000).default(1_000),
 });
+
+/** Rules between variables. A schema refinement would hide the object shape, so `loadEnv` applies them. */
+function crossChecks(env: z.infer<typeof EnvSchema>): string[] {
+  return env.NODE_ENV === 'production' && env.EXTERNAL_HTTP_ALLOW_PRIVATE
+    ? ['EXTERNAL_HTTP_ALLOW_PRIVATE: Must be false when NODE_ENV is production']
+    : [];
+}
 
 export type AppEnv = z.infer<typeof EnvSchema>;
 
@@ -163,6 +180,10 @@ export function loadEnv(
     throw new EnvError(
       result.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`),
     );
+  }
+  const problems = crossChecks(result.data);
+  if (problems.length > 0) {
+    throw new EnvError(problems);
   }
   return result.data;
 }

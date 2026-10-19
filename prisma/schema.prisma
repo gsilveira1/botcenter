@@ -421,17 +421,20 @@ model OutboxEvent {
 }
 
 model WebhookSubscription {
-  id              String    @id @default(uuid(7)) @db.Uuid
-  tenantId        String    @db.Uuid
-  url             String
+  id                      String    @id @default(uuid(7)) @db.Uuid
+  tenantId                String    @db.Uuid
+  url                     String
   /// Values of the contracts `EventType` enum.
-  events          String[]
+  events                  String[]
   /// The signing secret, encrypted by the API with AES-256-GCM. The API owns the format and the key.
-  secretEncrypted String
-  active          Boolean   @default(true)
-  deletedAt       DateTime? @db.Timestamptz(3)
-  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+  secretEncrypted         String
+  /// The secret before the last rotation (same format). Deliveries sign with both until `previousSecretExpiresAt`.
+  previousSecretEncrypted String?
+  previousSecretExpiresAt DateTime? @db.Timestamptz(3)
+  active                  Boolean   @default(true)
+  deletedAt               DateTime? @db.Timestamptz(3)
+  createdAt               DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime  @updatedAt @db.Timestamptz(3)
 
   tenant     Tenant            @relation(fields: [tenantId], references: [id])
   deliveries WebhookDelivery[]

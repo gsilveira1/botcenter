@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { OnApplicationShutdown } from '@nestjs/common';
 import {
+  DeleteObjectsCommand,
   GetObjectCommand,
   HeadObjectCommand,
   NotFound,
@@ -83,6 +84,23 @@ export class MediaStorage implements OnApplicationShutdown {
       }
       throw error;
     }
+  }
+
+  /**
+   * Deletes the objects in one `DeleteObjects` call (at most 1000 keys). Returns the keys that the storage
+   * did not delete. A missing key is a success, so a second call is safe (the maintenance media purge).
+   */
+  async deleteObjects(keys: readonly string[]): Promise<{ failedKeys: string[] }> {
+    if (keys.length === 0) {
+      return { failedKeys: [] };
+    }
+    const output = await this.s3.send(
+      new DeleteObjectsCommand({
+        Bucket: this.env.S3_BUCKET,
+        Delete: { Objects: keys.map((key) => ({ Key: key })), Quiet: true },
+      }),
+    );
+    return { failedKeys: (output.Errors ?? []).flatMap((error) => (error.Key ? [error.Key] : [])) };
   }
 
   onApplicationShutdown(): void {

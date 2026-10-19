@@ -72,7 +72,12 @@ export interface MaintenanceJob {
     | 'purge-messages'
     | 'purge-idempotency-keys'
     | 'purge-connect-tokens'
-    | 'dispatch-outbox';
+    | 'dispatch-outbox'
+    | 'purge-webhook-deliveries'
+    | 'purge-outbox-events'
+    | 'purge-media-objects'
+    | 'sweep-webhook-deliveries'
+    | 'check-alerts';
 }
 
 /**
@@ -82,6 +87,9 @@ export interface MaintenanceJob {
 export interface InstancesJob {
   task: 'monitor-connections' | 'reconcile-connections';
 }
+
+/** The tasks of the `maintenance` queue. */
+export type MaintenanceTaskName = MaintenanceJob['task'];
 
 export interface JobPayloads {
   outbound: OutboundJob | OutboundSweepJob;
