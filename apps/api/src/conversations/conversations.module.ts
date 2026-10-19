@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BotsApiModule } from '../bots/bots.module';
+import { MediaModule } from '../media/media.module';
 import { BotDefinitionsService } from './bot-definitions.service';
 import { ConversationCacheService } from './conversation-cache.service';
 import { ConversationMetrics } from './conversation-metrics';
@@ -16,7 +17,6 @@ import { EngineDiagnosticsReporter } from './worker/engine-diagnostics';
 import { InboundMediaService } from './worker/inbound-media.service';
 import { InboundStoreService } from './worker/inbound-store.service';
 import { InstanceResolver } from './worker/instance-context';
-import { MediaStorageService } from './worker/media-storage.service';
 import { MessageReceivedHandler } from './worker/message-received.handler';
 import { TimersWorker } from './worker/timers.worker';
 
@@ -41,14 +41,14 @@ export class ConversationsApiModule {}
 
 /**
  * Worker process: the `message.received` inbound handler and the `timers` consumer. It injects the
- * frozen ports `OUTBOUND_MESSAGES` (messages slice) and `EXTERNAL_HTTP` (webhooks slice): the modules
- * of these slices must export them globally.
+ * frozen ports `OUTBOUND_MESSAGES` (global `MessagesCoreModule`) and `EXTERNAL_HTTP` (webhooks slice,
+ * which must export it globally). The inbound media go through `MediaStorage` of `MediaModule`.
  */
 @Module({
+  imports: [MediaModule],
   providers: [
     ...SHARED,
     InstanceResolver,
-    MediaStorageService,
     InboundMediaService,
     InboundStoreService,
     ConversationLoader,

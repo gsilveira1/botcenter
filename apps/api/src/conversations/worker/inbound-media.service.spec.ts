@@ -7,9 +7,13 @@ import { testEnv } from '../../../test/support/env';
 import { MetricsService } from '../../metrics/metrics.service';
 import type { AlertService } from '../../services/alert.service';
 import { ConversationMetrics } from '../conversation-metrics';
-import { INBOUND_MEDIA_URL_TTL_SECONDS, InboundMediaService } from './inbound-media.service';
+import type { MediaStorage } from '../../media/media.storage';
+import {
+  INBOUND_MEDIA_URL_TTL_SECONDS,
+  InboundMediaService,
+  inboundMediaKey,
+} from './inbound-media.service';
 import type { InstanceContext } from './instance-context';
-import type { MediaStorageService } from './media-storage.service';
 
 const instance: InstanceContext = {
   tenantId: 't1',
@@ -28,12 +32,12 @@ function build() {
   }));
   const storage = {
     put: vi.fn(async () => undefined),
-    signedGetUrl: vi.fn(async () => 'https://media.test/signed'),
+    downloadUrl: vi.fn(async () => 'https://media.test/signed'),
   };
   const alerts = { notify: vi.fn(async () => undefined) };
   const service = new InboundMediaService(
     { downloadMedia } as unknown as WhatsAppProvider,
-    storage as unknown as MediaStorageService,
+    storage as unknown as MediaStorage,
     alerts as unknown as AlertService,
     new ConversationMetrics(new MetricsService(testEnv())),
   );
@@ -56,7 +60,8 @@ describe('InboundMediaService', () => {
       },
     });
     if (result.status !== 'stored') throw new Error('not stored');
-    expect(result.key).toBe(`inbound/t1/${result.mediaId}`);
+    expect(result.key).toBe(inboundMediaKey('t1', result.mediaId));
+    expect(result.key).toBe(`tenants/t1/inbound/${result.mediaId}`);
     expect(storage.put).toHaveBeenCalledWith(result.key, Buffer.from('jpeg'), 'image/jpeg');
   });
 

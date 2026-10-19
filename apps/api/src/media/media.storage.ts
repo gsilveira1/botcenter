@@ -65,6 +65,19 @@ export class MediaStorage implements OnApplicationShutdown {
     });
   }
 
+  /** Writes an object from the worker (inbound media of the conversations slice). */
+  async put(key: string, data: Buffer, contentType: string): Promise<void> {
+    await this.s3.send(
+      new PutObjectCommand({
+        Bucket: this.env.S3_BUCKET,
+        Key: key,
+        Body: data,
+        ContentType: contentType,
+        ContentLength: data.length,
+      }),
+    );
+  }
+
   downloadUrl(key: string, ttlSeconds: number): Promise<string> {
     const command = new GetObjectCommand({ Bucket: this.env.S3_BUCKET, Key: key });
     return getSignedUrl(this.s3, command, { expiresIn: ttlSeconds });

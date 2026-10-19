@@ -5,15 +5,20 @@ import { S3ServiceException } from '@aws-sdk/client-s3';
 import { ProviderError } from '@botcenter/whatsapp-provider';
 import type { DownloadedMedia, WhatsAppProvider } from '@botcenter/whatsapp-provider';
 import { getLogger } from '../../logging/logger';
+import { MediaStorage } from '../../media/media.storage';
 import { WHATSAPP_PROVIDER } from '../../provider/provider.tokens';
 import { AlertService } from '../../services/alert.service';
 import { ConversationMetrics } from '../conversation-metrics';
 import { uuidV7 } from '../uuid-v7';
 import type { InstanceContext } from './instance-context';
-import { MediaStorageService } from './media-storage.service';
 
 /** Life of the signed GET URL in a `message.received` event. */
 export const INBOUND_MEDIA_URL_TTL_SECONDS = 3_600;
+
+/** The object key of an inbound file (same layout as the outbound keys). No file name, no personal data. */
+export function inboundMediaKey(tenantId: string, mediaId: string): string {
+  return `tenants/${tenantId}/inbound/${mediaId}`;
+}
 
 export interface StoredMediaFile {
   status: 'stored';
@@ -59,7 +64,7 @@ export class InboundMediaService {
 
   constructor(
     @Inject(WHATSAPP_PROVIDER) private readonly provider: WhatsAppProvider,
-    private readonly storage: MediaStorageService,
+    private readonly storage: MediaStorage,
     private readonly alerts: AlertService,
     private readonly metrics: ConversationMetrics,
   ) {}
@@ -107,10 +112,10 @@ export class InboundMediaService {
     now: Date,
   ): Promise<StoredMediaFile | null> {
     const mediaId = uuidV7(now.getTime());
-    const key = `inbound/${instance.tenantId}/${mediaId}`;
+    const key = inboundMediaKey(instance.tenantId, mediaId);
     try {
       await this.storage.put(key, file.data, file.mimeType);
-      const url = await this.storage.signedGetUrl(key, INBOUND_MEDIA_URL_TTL_SECONDS);
+      const url = await this.storage.downloadUrl(key, INBOUND_MEDIA_URL_TTL_SECONDS);
       const expiresAt = new Date(now.getTime() + INBOUND_MEDIA_URL_TTL_SECONDS * 1000);
       this.metrics.inboundMedia.inc({ result: 'stored' });
       return {
