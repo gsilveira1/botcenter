@@ -1,6 +1,9 @@
 import { Injectable, Module } from '@nestjs/common';
 import type { OnModuleInit } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CoreModule } from '../../src/core/core.module';
+import { WorkerCoreModule } from '../../src/core/worker-core.module';
+import { InboundWorkerModule } from '../../src/inbound/inbound.module';
 import { InboundHandlerRegistry } from '../../src/inbound/inbound-handler.registry';
 import type {
   InboundHandler,
@@ -34,6 +37,10 @@ class RecordingMessageHandler implements InboundHandler<'message.received'>, OnM
 /** A wave 2 style worker module: it registers one inbound handler. */
 @Module({ providers: [RecordingMessageHandler] })
 class RecordingWorkerModule {}
+
+/** The worker core without the handlers of the feature slices, so `message.status` has no handler. */
+@Module({ imports: [CoreModule, WorkerCoreModule, InboundWorkerModule] })
+class CoreWorkerRoot {}
 
 let h: TestHarness;
 
@@ -130,7 +137,7 @@ describe('POST /internal/evolution/webhook', () => {
 
 describe('inbound worker', () => {
   it('dispatches each event to the handler of its kind and finishes jobs without a handler', async () => {
-    await h.startWorker([RecordingWorkerModule]);
+    await h.startWorker([RecordingWorkerModule], CoreWorkerRoot);
     const tenant = await h.createTenant();
     const instance = await h.createInstance(tenant.id);
     const message = evolutionInboundText({ instanceName: instance.providerName });

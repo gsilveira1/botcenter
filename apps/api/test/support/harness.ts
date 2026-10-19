@@ -341,9 +341,13 @@ export class TestHarness {
    * Starts the worker process (`WorkerModule` + `modules`) against the same containers, with the same
    * fakes. The workers start in `onApplicationBootstrap`. `close()` stops them.
    */
-  async startWorker(modules: Type[] = []): Promise<TestingModule> {
+  /**
+   * Builds a worker process. `root` replaces the root module, for example to test the core without the
+   * handlers of the feature slices.
+   */
+  async startWorker(modules: Type[] = [], root: Type = WorkerModule): Promise<TestingModule> {
     const env = { ...this.env, ROLE: 'worker' as const };
-    let builder = Test.createTestingModule({ imports: [WorkerModule, ...modules] });
+    let builder = Test.createTestingModule({ imports: [root, ...modules] });
     builder = TestHarness.applyOverrides(
       builder,
       env,
