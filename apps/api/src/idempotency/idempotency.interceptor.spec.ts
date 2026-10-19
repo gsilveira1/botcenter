@@ -30,7 +30,7 @@ function setup(
     url: '/v1/messages',
     body: { a: 1 },
     headers: { 'idempotency-key': 'k-1' },
-    auth: { tenantId: 't' },
+    auth: { tenantId: 't', keyId: 'key-a' },
     ...request,
   };
   const context = {
@@ -110,5 +110,19 @@ describe('IdempotencyInterceptor', () => {
     expect(() => interceptor.intercept(context, next('x'))).toThrow(
       expect.objectContaining({ code: 'VALIDATION_FAILED' }),
     );
+  });
+
+  it('scopes the stored response to the API key, so a second key never gets the replay (SEC-09)', async () => {
+    const first = setup({ kind: 'execute', id: 'row' });
+    await lastValueFrom(first.interceptor.intercept(first.context, next({ id: 'm' })));
+    const second = setup(
+      { kind: 'execute', id: 'row-2' },
+      { auth: { tenantId: 't', keyId: 'key-b' } },
+    );
+    await lastValueFrom(second.interceptor.intercept(second.context, next({ id: 'n' })));
+    const firstKey = (first.store.start.mock.calls[0] as unknown as string[])[1];
+    const secondKey = (second.store.start.mock.calls[0] as unknown as string[])[1];
+    expect(firstKey).toBe('key-a:k-1');
+    expect(secondKey).toBe('key-b:k-1');
   });
 });

@@ -23,7 +23,9 @@ export const SkipIdempotency = () => SetMetadata(SKIP_IDEMPOTENCY, true);
  * `Idempotency-Key` for `POST`, `PUT`, and `DELETE` under `/v1` (plan, section 4). The header is optional.
  * With the header, the first request runs and its status and body are stored for 24 h. A repeat with the
  * same request gets the stored response with `Idempotency-Replayed: true`. A failed request (an error)
- * frees the key. The scope is the tenant of the API key, so the interceptor needs `request.auth`.
+ * frees the key. The scope is the tenant and the API key (SEC-09): the stored key is
+ * `<api key id>:<Idempotency-Key>`, so a replay never skips the checks of an other key of the tenant
+ * (for example its instance list). The interceptor needs `request.auth`.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
@@ -61,9 +63,10 @@ export class IdempotencyInterceptor implements NestInterceptor {
       ]);
     }
     const tenantId = request.auth.tenantId;
+    const scopedKey = `${request.auth.keyId}:${rawKey}`;
     const hash = requestHash(request.method, request.url, request.body);
 
-    return from(this.store.start(tenantId, rawKey, hash)).pipe(
+    return from(this.store.start(tenantId, scopedKey, hash)).pipe(
       switchMap((start) => {
         if (start.kind === 'replay') {
           void reply.status(start.status).header(IDEMPOTENCY_REPLAYED_HEADER, 'true');
