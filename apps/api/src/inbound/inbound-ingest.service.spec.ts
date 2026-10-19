@@ -7,7 +7,12 @@ import { MetricsService } from '../metrics/metrics.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { QueuesService } from '../queues/queues.service';
 import type { AlertService } from '../services/alert.service';
-import { InboundIngestService, inboundJobId, withoutNul } from './inbound-ingest.service';
+import {
+  DEDUPE_PENDING_TTL_SECONDS,
+  InboundIngestService,
+  inboundJobId,
+  withoutNul,
+} from './inbound-ingest.service';
 
 const event: ProviderEvent = {
   kind: 'message.status',
@@ -70,12 +75,20 @@ describe('InboundIngestService', () => {
         data: expect.objectContaining({ instanceId: 'i-1', eventType: 'message.status' }),
       }),
     );
-    expect(redis.set).toHaveBeenCalledWith(
+    expect(redis.set).toHaveBeenNthCalledWith(
+      1,
+      'bc:dedupe:inbound:evo:status:1',
+      'pending',
+      'EX',
+      DEDUPE_PENDING_TTL_SECONDS,
+      'NX',
+    );
+    expect(redis.set).toHaveBeenNthCalledWith(
+      2,
       'bc:dedupe:inbound:evo:status:1',
       '1',
       'EX',
       86_400,
-      'NX',
     );
     expect(queues.add).toHaveBeenCalledWith(
       'inbound',
@@ -87,6 +100,22 @@ describe('InboundIngestService', () => {
       { jobId: inboundJobId('evo:status:1') },
     );
     expect(inboundJobId('evo:status:1')).toMatch(/^in-[0-9a-f]{64}$/);
+  });
+
+  it('keeps the dedupe key short until the job is queued, so a crash does not drop the retry (ARCH-01)', async () => {
+    const { service, redis, queues } = build();
+    let pendingTtl = 0;
+    queues.add.mockImplementationOnce(async () => {
+      // The API stops here: only the first key exists, with a short time to live.
+      pendingTtl = (redis.set.mock.calls[0] as unknown[])[3] as number;
+      return {};
+    });
+    await service.ingest({ raw: true });
+    expect(pendingTtl).toBeGreaterThan(0);
+    expect(pendingTtl).toBeLessThanOrEqual(300);
+    expect(redis.set.mock.invocationCallOrder[1]).toBeGreaterThan(
+      queues.add.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('counts a duplicate and does not enqueue it', async () => {

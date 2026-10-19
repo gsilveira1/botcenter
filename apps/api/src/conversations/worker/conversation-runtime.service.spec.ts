@@ -61,6 +61,13 @@ function build(pages: ReturnType<typeof row>[][]) {
   return { runtime, locks, steps, http, findMany, findUnique, instances };
 }
 
+describe('CONVERSATION_LOCK (ARCH-16)', () => {
+  it('waits only a short time for a busy lock, so a job does not hold an inbound slot', () => {
+    // The holder drains every pending row of the conversation; the waiting job runs again later.
+    expect(CONVERSATION_LOCK.waitMs).toBeLessThanOrEqual(250);
+  });
+});
+
 describe('ConversationRuntime.drain', () => {
   it('processes the pending rows in order under the lock, then runs the webhooks after the lock', async () => {
     const { runtime, locks, steps, http, findMany } = build([[row('a'), row('b')]]);

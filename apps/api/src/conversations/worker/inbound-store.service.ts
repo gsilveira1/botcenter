@@ -1,16 +1,20 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { InboundMedia } from '@botcenter/contracts';
 import type { MessageReceivedEvent } from '@botcenter/whatsapp-provider';
+import { ENV } from '../../config/env';
+import type { AppEnv } from '../../config/env';
 import { Prisma } from '../../generated/prisma/client';
+import { getLogger } from '../../logging/logger';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { TransactionClient } from '../../prisma/prisma.service';
+import { QuotaService } from '../../rate-limit/quota.service';
 import { OutboxService } from '../../services/outbox.service';
-import { TenantsService } from '../../services/tenants.service';
+import { contactKey } from '../conversation-keys';
 import { ConversationMetrics } from '../conversation-metrics';
 import { eventContentFields, toStoredContent } from '../inbound-content';
 import type { StoredInboundContent } from '../inbound-content';
 import { InboundMediaService } from './inbound-media.service';
-import type { InboundMediaResult, StoredMediaFile } from './inbound-media.service';
+import type { InboundMediaFile, InboundMediaResult } from './inbound-media.service';
 import type { InstanceContext } from './instance-context';
 
 /** An inbound `messages` row after the store step. */
@@ -66,12 +70,15 @@ function toStored(row: Row): StoredInbound {
  */
 @Injectable()
 export class InboundStoreService {
+  private readonly logger = getLogger('inbound-store');
+
   constructor(
+    @Inject(ENV) private readonly env: AppEnv,
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
-    private readonly tenants: TenantsService,
     private readonly media: InboundMediaService,
     private readonly metrics: ConversationMetrics,
+    private readonly quotas: QuotaService,
   ) {}
 
   async store(
@@ -111,9 +118,10 @@ export class InboundStoreService {
       where: { instanceId_contact: { instanceId: instance.instanceId, contact: event.from } },
       select: { id: true, handoff: true },
     });
+    const forBot = instance.botId !== null && conversation?.handoff !== true;
     const row: NewRow = {
       conversationId: conversation?.id ?? null,
-      botPending: instance.botId !== null && conversation?.handoff !== true,
+      botPending: forBot && (await this.withinContactLimit(instance, event.from)),
       content: toStoredContent(event.content),
       receivedAt,
     };
@@ -132,6 +140,34 @@ export class InboundStoreService {
         }
       }
       throw error;
+    }
+  }
+
+  /**
+   * SEC-04: at most `BOT_INBOUND_LIMIT_PER_MINUTE` messages of one contact on one instance in one minute
+   * go to the bot. Above it, the message is stored and sent to the client, but the bot does not run
+   * (log and metric). A Redis error allows the message (the bot stays available).
+   */
+  private async withinContactLimit(instance: InstanceContext, contact: string): Promise<boolean> {
+    try {
+      const quota = await this.quotas.consume({
+        name: 'bot-inbound-contact',
+        subject: `${instance.instanceId}:${contactKey(contact)}`,
+        window: 'minute',
+        limit: this.env.BOT_INBOUND_LIMIT_PER_MINUTE,
+      });
+      if (quota.allowed) {
+        return true;
+      }
+      this.metrics.skipped.inc({ reason: 'rate_limited' });
+      this.logger.warn(
+        { limit_per_minute: quota.limit },
+        'inbound messages of a contact passed the limit; the bot does not run for this message',
+      );
+      return false;
+    } catch (error) {
+      this.logger.warn({ err: error }, 'inbound contact limit not checked; the bot runs');
+      return true;
     }
   }
 
@@ -174,7 +210,11 @@ export class InboundStoreService {
       return;
     }
     const now = new Date();
-    const result = await this.media.copy(instance, providerMessageId, now);
+    const result = await this.media.copy(
+      instance,
+      mediaFile(stored.messageId, providerMessageId, stored.content),
+      now,
+    );
     const content: StoredInboundContent = {
       ...stored.content,
       media_status: result.status,
@@ -193,33 +233,9 @@ export class InboundStoreService {
       if (updated.count !== 1) {
         return;
       }
-      if (result.status === 'stored') {
-        await this.writeMediaObject(tx, instance, result, now);
-      }
       await this.writeEvent(tx, instance, { ...stored, content }, mediaOf(result));
     });
     stored.content = content;
-  }
-
-  private async writeMediaObject(
-    tx: TransactionClient,
-    instance: InstanceContext,
-    file: StoredMediaFile,
-    now: Date,
-  ): Promise<void> {
-    const tenant = await this.tenants.get(instance.tenantId);
-    await tx.mediaObject.create({
-      data: {
-        id: file.mediaId,
-        tenantId: instance.tenantId,
-        key: file.key,
-        contentType: file.contentType,
-        sizeBytes: file.sizeBytes,
-        fileName: file.fileName,
-        direction: 'inbound',
-        expiresAt: new Date(now.getTime() + tenant.retentionDays * 86_400_000),
-      },
-    });
   }
 
   private async writeEvent(
@@ -242,6 +258,21 @@ export class InboundStoreService {
       },
     });
   }
+}
+
+/** The media copy input of a stored inbound media row. */
+function mediaFile(
+  messageId: string,
+  providerMessageId: string,
+  content: Extract<StoredInboundContent, { type: 'media' }>,
+): InboundMediaFile {
+  return {
+    messageId,
+    providerMessageId,
+    mimeType: content.mime_type,
+    ...(content.file_name === undefined ? {} : { fileName: content.file_name }),
+    ...(content.file_length === undefined ? {} : { declaredBytes: content.file_length }),
+  };
 }
 
 function mediaOf(result: InboundMediaResult): InboundMedia | undefined {

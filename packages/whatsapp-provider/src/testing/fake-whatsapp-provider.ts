@@ -1,8 +1,11 @@
+import { MEDIA_MAX_BYTES } from '@botcenter/contracts';
 import {
   type ConnectInput,
   type ConnectResult,
   type CreateInstanceInput,
   type DownloadedMedia,
+  type DownloadMediaOptions,
+  MediaTooLargeError,
   ProviderError,
   type ProviderErrorCode,
   type ProviderConnectionState,
@@ -165,11 +168,14 @@ export class FakeWhatsAppProvider implements WhatsAppProvider {
   async downloadMedia(
     name: ProviderInstanceName,
     providerMessageId: string,
+    options: DownloadMediaOptions = {},
   ): Promise<DownloadedMedia> {
     this.enter('downloadMedia', [name, providerMessageId]);
     this.require(name);
     const media = this.media.get(`${name}:${providerMessageId}`);
     if (!media) throw new ProviderError('rejected', 'Fake provider: the message has no media', 400);
+    const maxBytes = options.maxBytes ?? MEDIA_MAX_BYTES;
+    if (media.data.length > maxBytes) throw new MediaTooLargeError(maxBytes);
     return media;
   }
 

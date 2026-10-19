@@ -16,6 +16,11 @@ import { REDIS } from '../redis/redis.module';
 import { AlertService } from '../services/alert.service';
 
 export const DEDUPE_TTL_SECONDS = 86_400;
+/**
+ * The life of the dedupe key until the job is queued (ARCH-01). When the API stops between the key and
+ * the add, the key ends soon, so a retry of the provider is not dropped as a duplicate for 24 h.
+ */
+export const DEDUPE_PENDING_TTL_SECONDS = 120;
 
 export interface IngestResult {
   received: number;
@@ -69,24 +74,7 @@ export class InboundIngestService {
   ) {}
 
   async ingest(body: unknown, now = new Date()): Promise<IngestResult> {
-    let normalized: { events: ProviderEvent[]; ignored: number };
-    try {
-      normalized = this.normalizer.normalize(body);
-    } catch (error) {
-      if (error instanceof ProviderError && error.code === 'rejected') {
-        // Evolution does not retry a 400, so the answer does not cause a loop. The raw body stays for the
-        // operators when the database accepts it.
-        this.logger.warn({ err: error }, 'provider webhook body rejected by the normalizer');
-        this.metrics.inboundEventsTotal.inc({ result: 'rejected' });
-        await this.storeRejected(body, now);
-        throw new AppError('VALIDATION_FAILED', 'The provider webhook body is not valid', {
-          cause: error,
-        });
-      }
-      throw error;
-    }
-
-    const { events, ignored } = normalized;
+    const { events, ignored } = await this.normalize(body, now);
     if (ignored > 0) {
       this.metrics.inboundEventsTotal.inc({ result: 'ignored' }, ignored);
     }
@@ -98,7 +86,37 @@ export class InboundIngestService {
       instanceId,
       now,
     );
+    const { enqueued, duplicates } = await this.enqueueAll(events, rawEventId, now);
+    return { received: events.length, enqueued, duplicates, ignored };
+  }
 
+  /** Throws 400 for a body that the normalizer rejects (the raw body is kept when possible). */
+  private async normalize(
+    body: unknown,
+    now: Date,
+  ): Promise<{ events: ProviderEvent[]; ignored: number }> {
+    try {
+      return this.normalizer.normalize(body);
+    } catch (error) {
+      if (!(error instanceof ProviderError) || error.code !== 'rejected') {
+        throw error;
+      }
+      // Evolution does not retry a 400, so the answer does not cause a loop. The raw body stays for the
+      // operators when the database accepts it.
+      this.logger.warn({ err: error }, 'provider webhook body rejected by the normalizer');
+      this.metrics.inboundEventsTotal.inc({ result: 'rejected' });
+      await this.storeRejected(body, now);
+      throw new AppError('VALIDATION_FAILED', 'The provider webhook body is not valid', {
+        cause: error,
+      });
+    }
+  }
+
+  private async enqueueAll(
+    events: ProviderEvent[],
+    rawEventId: string,
+    now: Date,
+  ): Promise<{ enqueued: number; duplicates: number }> {
     let enqueued = 0;
     let duplicates = 0;
     for (const event of events) {
@@ -114,14 +132,20 @@ export class InboundIngestService {
     if (duplicates > 0) {
       this.metrics.inboundEventsTotal.inc({ result: 'duplicate' }, duplicates);
     }
-    return { received: events.length, enqueued, duplicates, ignored };
+    return { enqueued, duplicates };
   }
 
   /** Returns false for a duplicate. Throws (500, the provider retries) when the event cannot be queued. */
   private async enqueue(event: ProviderEvent, rawEventId: string, now: Date): Promise<boolean> {
     const dedupeKey = redisKeys.inboundDedupe(event.dedupeKey);
     try {
-      const first = await this.redis.set(dedupeKey, '1', 'EX', DEDUPE_TTL_SECONDS, 'NX');
+      const first = await this.redis.set(
+        dedupeKey,
+        'pending',
+        'EX',
+        DEDUPE_PENDING_TTL_SECONDS,
+        'NX',
+      );
       if (first !== 'OK') {
         return false;
       }
@@ -131,6 +155,9 @@ export class InboundIngestService {
         { event: serializeEvent(event), rawEventId, receivedAt: now.toISOString() },
         { jobId: inboundJobId(event.dedupeKey) },
       );
+      // The job exists: a retry of the provider is a duplicate for 24 h. A failure here frees the key
+      // (catch below); the retry then adds the same job id, which BullMQ ignores.
+      await this.redis.set(dedupeKey, '1', 'EX', DEDUPE_TTL_SECONDS);
       return true;
     } catch (error) {
       // Free the dedupe key, so that the retry of the provider is not dropped as a duplicate.

@@ -16,6 +16,8 @@ export interface StepPlan {
   result: EngineResult;
   /** The menu to keep for the next text reply (`conversations.lastMenu`). */
   lastMenu: LastMenu | null;
+  /** State timeouts in a row after the step: 0 after an inbound message (SEC-04). */
+  timeoutsInRow: number;
   /** The inbound row that the step consumes (`botPending` goes to false), or `null` for a timer. */
   messageId: string | null;
   now: Date;
@@ -56,5 +58,6 @@ export function recordAfter(plan: StepPlan): ConversationRecord {
     version: result.version,
     handoff: result.handoff,
     lastMenu: plan.lastMenu,
+    timeoutsInRow: plan.timeoutsInRow,
   };
 }

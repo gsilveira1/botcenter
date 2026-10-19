@@ -48,6 +48,7 @@ function plan(result: Partial<EngineResult>): StepPlan {
       diagnostics: [],
       ...result,
     },
+    timeoutsInRow: 0,
     lastMenu: null,
     messageId: null,
     now: new Date(),

@@ -139,6 +139,10 @@ Inject `EXTERNAL_HTTP` (the frozen port, `ExternalHttpPort.postJson`) for a URL 
 - The port throws `ExternalHttpError` only (`forbidden_address`, `timeout`, `network`, `response_too_large`).
 - Tests: replace `DNS_RESOLVER` with `fakeDns()` from `test/support/webhooks.ts`. Set `EXTERNAL_HTTP_ALLOW_PRIVATE=true` (refused in production) to call a local receiver (`TestReceiver` in `test/support/receiver.ts`).
 
+## Add an inbound sweep task
+
+The `sweep-inbound` job of the `inbound` queue (every minute) repairs lost inbound work. Register an `InboundSweepTask` (`name`, `run(now)`) with `InboundHandlerRegistry.registerSweep(this)` in `onModuleInit`. `run` must be idempotent and safe when two runs overlap. A failed task does not stop the other tasks. The conversations slice registers `drain-pending-inbound` and `repair-state-timers`.
+
 ## Add a maintenance task
 
 Register a `MaintenanceTask` (`name`, `everyMs`, `run(now)`) with `MaintenanceTaskRegistry.register(this)` in `onModuleInit`. Add the name to `MaintenanceJob['task']` in `queue-names.ts`. The maintenance worker upserts one BullMQ job scheduler for each task (the scheduler id is the task name) and removes the schedulers of old tasks. `run` must be idempotent and safe when two runs overlap. Use `BatchPurger.deleteWhere` for deletes (batches with `FOR UPDATE SKIP LOCKED`) and `IncidentService.update` for an alert with a recovery message.

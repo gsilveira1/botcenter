@@ -18,6 +18,8 @@ import { InboundMediaService } from './worker/inbound-media.service';
 import { InboundStoreService } from './worker/inbound-store.service';
 import { InstanceResolver } from './worker/instance-context';
 import { MessageReceivedHandler } from './worker/message-received.handler';
+import { PendingInboundSweep } from './worker/pending-inbound.sweep';
+import { TimerRepairSweep } from './worker/timer-repair.sweep';
 import { TimersWorker } from './worker/timers.worker';
 
 /** The services that both processes use. */
@@ -60,6 +62,8 @@ export class ConversationsApiModule {}
     ConversationRuntime,
     MessageReceivedHandler,
     TimersWorker,
+    PendingInboundSweep,
+    TimerRepairSweep,
   ],
 })
 export class ConversationsWorkerModule {}

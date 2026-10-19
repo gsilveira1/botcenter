@@ -53,6 +53,7 @@ function plan(overrides: Partial<StepPlan> = {}): StepPlan {
     },
     result: result(),
     lastMenu: null,
+    timeoutsInRow: 0,
     messageId: '0199a000-0000-7000-8000-000000000005',
     now: new Date(),
     ...overrides,
@@ -146,10 +147,41 @@ describe('ConversationWriter', () => {
     );
     expect(tx.conversation.updateMany).toHaveBeenCalledWith({
       where: { id: CONVERSATION, tenantId: TENANT },
-      data: { lastInboundAt: expect.any(Date) },
+      data: { lastInboundAt: expect.any(Date), timeoutsInRow: 0 },
     });
     expect(tx.conversationTransition.create).not.toHaveBeenCalled();
     expect(tx.message.updateMany).toHaveBeenCalled();
     expect(outcome.record.version).toBe(4);
+  });
+
+  it('stores the fire time of the new state timer in the step transaction (ARCH-08)', async () => {
+    const armed = build();
+    const fireAt = new Date('2026-10-19T13:00:00.000Z');
+    await armed.writer.write(
+      plan({
+        result: result({ timer: { state: 'b', version: 5, jobId: 'timer-x-v5', fireAt } }),
+      }),
+    );
+    expect(armed.tx.conversation.updateMany).toHaveBeenCalledWith({
+      where: { id: CONVERSATION, tenantId: TENANT, version: 4 },
+      data: expect.objectContaining({ timerFireAt: fireAt }),
+    });
+
+    const none = build();
+    await none.writer.write(plan());
+    expect(none.tx.conversation.updateMany).toHaveBeenCalledWith({
+      where: { id: CONVERSATION, tenantId: TENANT, version: 4 },
+      data: expect.objectContaining({ timerFireAt: null }),
+    });
+  });
+
+  it('writes the count of timeouts in a row of the step (SEC-04)', async () => {
+    const { writer, tx } = build();
+    const outcome = await writer.write(plan({ messageId: null, timeoutsInRow: 2 }));
+    expect(tx.conversation.updateMany).toHaveBeenCalledWith({
+      where: { id: CONVERSATION, tenantId: TENANT, version: 4 },
+      data: expect.objectContaining({ timeoutsInRow: 2 }),
+    });
+    expect(outcome.record.timeoutsInRow).toBe(2);
   });
 });

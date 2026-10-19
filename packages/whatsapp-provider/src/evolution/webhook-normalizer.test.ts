@@ -174,6 +174,25 @@ describe('EvolutionWebhookNormalizer: messages.upsert', () => {
     expect(one(fixture)).toMatchObject({ content });
   });
 
+  it('exposes the declared file size of a media message (ARCH-03, SEC-02)', () => {
+    expect(one('messages-upsert.image')).toMatchObject({ content: { fileLength: 48213 } });
+    const body = structuredClone(webhookFixture('messages-upsert.video')) as {
+      data: { message: Record<string, unknown> };
+    };
+    const video = body.data.message['videoMessage'] as Record<string, unknown>;
+    video['fileLength'] = { low: 0, high: 1, unsigned: true };
+    expect(normalizer.normalize(body).events[0]).toMatchObject({
+      content: { fileLength: 4_294_967_296 },
+    });
+    video['fileLength'] = '734003200';
+    expect(normalizer.normalize(body).events[0]).toMatchObject({
+      content: { fileLength: 734_003_200 },
+    });
+    video['fileLength'] = { low: 0, high: 0, unsigned: true };
+    const unknown = normalizer.normalize(body).events[0] as { content: Record<string, unknown> };
+    expect(unknown.content['fileLength']).toBeUndefined();
+  });
+
   it.each([
     [
       'messages-upsert.buttons-response',

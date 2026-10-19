@@ -20,6 +20,15 @@ export interface InboundHandler<K extends ProviderEventKind = ProviderEventKind>
 }
 
 /**
+ * A repair task of the inbound path. The `sweep-inbound` job of the `inbound` queue (every minute) runs
+ * each registered task (ARCH-01). `run` must be idempotent and safe when two runs overlap.
+ */
+export interface InboundSweepTask {
+  readonly name: string;
+  run(now: Date): Promise<unknown>;
+}
+
+/**
  * Wave 2 modules register one handler for each `ProviderEventKind` in `onModuleInit`:
  *
  *   @Injectable()
@@ -34,6 +43,7 @@ export interface InboundHandler<K extends ProviderEventKind = ProviderEventKind>
 @Injectable()
 export class InboundHandlerRegistry {
   private readonly handlers = new Map<ProviderEventKind, InboundHandler>();
+  private readonly sweepTasks: InboundSweepTask[] = [];
 
   register<K extends ProviderEventKind>(kind: K, handler: InboundHandler<K>): void {
     if (this.handlers.has(kind)) {
@@ -48,5 +58,17 @@ export class InboundHandlerRegistry {
 
   kinds(): ProviderEventKind[] {
     return [...this.handlers.keys()];
+  }
+
+  /** Registers a repair task of the `sweep-inbound` job (in `onModuleInit`). */
+  registerSweep(task: InboundSweepTask): void {
+    if (this.sweepTasks.some((item) => item.name === task.name)) {
+      throw new Error(`An inbound sweep task "${task.name}" is already registered`);
+    }
+    this.sweepTasks.push(task);
+  }
+
+  sweeps(): readonly InboundSweepTask[] {
+    return this.sweepTasks;
   }
 }

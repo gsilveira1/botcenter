@@ -1,8 +1,10 @@
 import { EvolutionProvider } from '@botcenter/whatsapp-provider';
 import { newMessageId } from '@botcenter/whatsapp-provider/testing';
+import type { Job } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { inboundJobId } from '../../src/inbound/inbound-ingest.service';
 import { QueuesService } from '../../src/queues/queues.service';
+import type { InboundJob } from '../../src/queues/queue-names';
 import { TestHarness } from '../support/harness';
 
 /**
@@ -26,7 +28,7 @@ async function inboundJobsOf(instanceName: string) {
     .get(QueuesService)
     .get('inbound')
     .getJobs(['waiting', 'delayed', 'active', 'completed', 'failed']);
-  return jobs.filter((job) => job.data.event.instanceName === instanceName);
+  return jobs.filter((job) => 'event' in job.data && job.data.event.instanceName === instanceName);
 }
 
 describe('Evolution provider over HTTP', () => {
@@ -62,7 +64,8 @@ describe('Evolution provider over HTTP', () => {
     expect(first.status).toBe(200);
 
     const dedupeKey = `message.received:${name}:${id}`;
-    const job = await h.get(QueuesService).get('inbound').getJob(inboundJobId(dedupeKey));
+    const job = (await h.get(QueuesService).get('inbound').getJob(inboundJobId(dedupeKey))) as
+      Job<InboundJob> | undefined;
     expect(job?.name).toBe('message.received');
     expect(job?.data.event).toMatchObject({
       kind: 'message.received',

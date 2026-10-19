@@ -142,6 +142,19 @@ export const EnvSchema = z.object({
   MEDIA_SEND_URL_TTL_SECONDS: positiveInt.max(86_400).default(900),
 
   /**
+   * Inbound media downloads that one worker process runs at the same time (ARCH-03, SEC-02). Each
+   * download can keep about 60 MiB in memory (the base64 answer, its parse, and the file).
+   */
+  INBOUND_MEDIA_DOWNLOAD_CONCURRENCY: positiveInt.max(10).default(2),
+  /**
+   * Inbound messages of one contact on one instance in one minute that the bot answers (SEC-04). The
+   * worker stores each message above the limit, but the bot does not run for it.
+   */
+  BOT_INBOUND_LIMIT_PER_MINUTE: positiveInt.max(10_000).default(30),
+  /** State timeouts in a row without an inbound message (SEC-04). After the last one, no timer is armed. */
+  BOT_MAX_TIMEOUTS_IN_ROW: positiveInt.max(100).default(3),
+
+  /**
    * Test and development only: the SSRF guard of the external HTTP client accepts private, loopback, and
    * link-local addresses. `loadEnv` refuses `true` when `NODE_ENV=production`.
    */

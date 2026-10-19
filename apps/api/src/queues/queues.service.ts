@@ -16,9 +16,12 @@ import type { JobPayloads, QueueName } from './queue-names';
  */
 export const DEFAULT_JOB_OPTIONS: Record<QueueName, DefaultJobOptions> = {
   outbound: { attempts: 5, backoff: { type: 'exponential', delay: 2_000 } },
-  inbound: { attempts: 5, backoff: { type: 'exponential', delay: 1_000 } },
+  // ARCH-01: about 34 minutes of retries (2 s, 4 s, ... 1024 s), so a short PostgreSQL or Redis failure
+  // does not lose an event. The handlers are idempotent.
+  inbound: { attempts: 11, backoff: { type: 'exponential', delay: 2_000 } },
   webhooks: { attempts: 1 },
-  timers: { attempts: 3, backoff: { type: 'exponential', delay: 5_000 } },
+  // ARCH-08: about 10 minutes of retries (5 s to 320 s). The `sweep-inbound` job retries a failed timer.
+  timers: { attempts: 8, backoff: { type: 'exponential', delay: 5_000 } },
   maintenance: { attempts: 3, backoff: { type: 'exponential', delay: 60_000 } },
   // A scheduler adds the next run after one minute: a retry is not necessary.
   instances: { attempts: 1 },

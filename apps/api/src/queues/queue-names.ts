@@ -49,6 +49,14 @@ export interface InboundJob {
   receivedAt: string;
 }
 
+/**
+ * `inbound`, job name `sweep-inbound`: the repeatable job that repairs the inbound path (ARCH-01, ARCH-08):
+ * it drains old `botPending` rows and arms lost state timers (conversations slice).
+ */
+export interface InboundSweepJob {
+  task: 'sweep-inbound';
+}
+
 /** `webhooks`: deliver one webhook delivery row (webhooks slice). */
 export interface WebhookJob {
   tenantId: string;
@@ -93,7 +101,7 @@ export type MaintenanceTaskName = MaintenanceJob['task'];
 
 export interface JobPayloads {
   outbound: OutboundJob | OutboundSweepJob;
-  inbound: InboundJob;
+  inbound: InboundJob | InboundSweepJob;
   webhooks: WebhookJob;
   timers: TimerJob;
   maintenance: MaintenanceJob;

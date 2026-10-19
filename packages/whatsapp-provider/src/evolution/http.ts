@@ -6,6 +6,10 @@ import { ProviderError, type ProviderErrorCode } from '../types.js';
 export interface HttpResponseLike {
   status: number;
   text(): Promise<string>;
+  /** The response headers. The size limit reads `content-length` (optional for test doubles). */
+  headers?: { get(name: string): string | null };
+  /** The body as a stream. The size limit reads it chunk by chunk (optional for test doubles). */
+  body?: AsyncIterable<Uint8Array> | null;
 }
 
 export interface HttpRequestInit {
@@ -36,6 +40,54 @@ export interface EvolutionCall {
   timeoutMs: number;
   /** Message content of the request. The log replaces each value with `[content]` in an Evolution error. */
   redact?: string[];
+  /**
+   * The maximum size of the response body in bytes. Above it, the client aborts the request and throws
+   * `ResponseTooLargeError`, so a large answer never is completely in memory.
+   */
+  maxResponseBytes?: number;
+}
+
+/** The response body is larger than `EvolutionCall.maxResponseBytes`. The request was aborted. */
+export class ResponseTooLargeError extends Error {
+  constructor(
+    readonly limitBytes: number,
+    readonly declaredBytes?: number,
+  ) {
+    super(`The response body is larger than ${limitBytes} bytes`);
+    this.name = 'ResponseTooLargeError';
+  }
+}
+
+/**
+ * Reads the body as UTF-8 text and stops at `limit` bytes: a `content-length` above the limit stops the
+ * request before the read, and a stream stops at the first chunk that passes the limit.
+ */
+async function readCapped(
+  response: HttpResponseLike,
+  limit: number,
+  controller: AbortController,
+): Promise<string> {
+  const declared = Number(response.headers?.get('content-length') ?? Number.NaN);
+  if (Number.isFinite(declared) && declared > limit) {
+    controller.abort();
+    throw new ResponseTooLargeError(limit, declared);
+  }
+  if (!response.body) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > limit) throw new ResponseTooLargeError(limit);
+    return text;
+  }
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of response.body) {
+    size += chunk.byteLength;
+    if (size > limit) {
+      controller.abort();
+      throw new ResponseTooLargeError(limit);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, size).toString('utf8');
 }
 
 export interface EvolutionHttpOptions {
@@ -87,10 +139,11 @@ export class EvolutionHttp {
       apikey: this.options.apiKey,
       accept: 'application/json',
     };
+    const controller = new AbortController();
     const init: HttpRequestInit = {
       method: call.method,
       headers,
-      signal: AbortSignal.timeout(call.timeoutMs),
+      signal: AbortSignal.any([AbortSignal.timeout(call.timeoutMs), controller.signal]),
     };
     if (call.body !== undefined) {
       headers['content-type'] = 'application/json';
@@ -98,36 +151,54 @@ export class EvolutionHttp {
     }
 
     const started = Date.now();
-    let response: HttpResponseLike;
-    let text: string;
     try {
-      response = await this.fetchFn(`${this.baseUrl}${call.path}`, init);
-      text = await response.text();
+      const response = await this.fetchFn(`${this.baseUrl}${call.path}`, init);
+      const text =
+        call.maxResponseBytes === undefined
+          ? await response.text()
+          : await readCapped(response, call.maxResponseBytes, controller);
+      return { status: response.status, body: parseBody(text) };
     } catch (error) {
-      const timeout = isTimeout(error);
-      this.options.logger.warn(
-        {
-          operation: call.operation,
-          route: call.route,
-          instance_name: call.instanceName,
-          duration_ms: Date.now() - started,
-          timeout,
-          error_name: error instanceof Error ? error.name : typeof error,
-          error_code: (error as { cause?: { code?: string } } | undefined)?.cause?.code,
-        },
-        'Evolution request failed before a response',
-      );
-      throw new ProviderError(
-        'unavailable',
-        timeout
-          ? `Evolution ${call.operation} timed out after ${call.timeoutMs} ms`
-          : `Evolution ${call.operation} failed: network error`,
-        undefined,
-        { cause: error },
-      );
+      throw this.failedBeforeResponse(call, error, Date.now() - started);
     }
+  }
 
-    return { status: response.status, body: parseBody(text) };
+  /**
+   * A request without a complete response: a `ResponseTooLargeError` stays as it is; a network error or
+   * a timeout becomes `ProviderError` (`unavailable`). Both write a log line.
+   */
+  private failedBeforeResponse(call: EvolutionCall, error: unknown, durationMs: number): Error {
+    const fields = {
+      operation: call.operation,
+      route: call.route,
+      instance_name: call.instanceName,
+      duration_ms: durationMs,
+    };
+    if (error instanceof ResponseTooLargeError) {
+      this.options.logger.warn(
+        { ...fields, limit_bytes: error.limitBytes, declared_bytes: error.declaredBytes },
+        'Evolution response is larger than the limit; the request was aborted',
+      );
+      return error;
+    }
+    const timeout = isTimeout(error);
+    this.options.logger.warn(
+      {
+        ...fields,
+        timeout,
+        error_name: error instanceof Error ? error.name : typeof error,
+        error_code: (error as { cause?: { code?: string } } | undefined)?.cause?.code,
+      },
+      'Evolution request failed before a response',
+    );
+    return new ProviderError(
+      'unavailable',
+      timeout
+        ? `Evolution ${call.operation} timed out after ${call.timeoutMs} ms`
+        : `Evolution ${call.operation} failed: network error`,
+      undefined,
+      { cause: error },
+    );
   }
 
   /** Builds a `ProviderError` and writes the technical details (masked) to the log. */
