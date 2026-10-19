@@ -1,0 +1,118 @@
+{
+  "event": "messages.upsert",
+  "instance": "inst_0192f1a4-7c2e-7b51-9a0e-3f5d2c8b6e41",
+  "data": {
+    "key": {
+      "remoteJid": "5511987654321@s.whatsapp.net",
+      "remoteJidAlt": "128793450123456@lid",
+      "fromMe": false,
+      "id": "3EB0DDEEFF001122334455",
+      "addressingMode": "pn"
+    },
+    "pushName": "Maria Silva",
+    "status": "DELIVERY_ACK",
+    "message": {
+      "documentMessage": {
+        "url": "https://mmg.whatsapp.net/v/t62.7118-24/31337_1_n.enc?ccb=11-4&oh=01_Q5Aa&oe=6A0B1C2D&_nc_sid=5e03e0&mms3=true",
+        "fileSha256": {
+          "0": 171,
+          "1": 4,
+          "2": 59,
+          "3": 230,
+          "4": 12,
+          "5": 9
+        },
+        "fileLength": {
+          "low": 48213,
+          "high": 0,
+          "unsigned": true
+        },
+        "mediaKey": {
+          "0": 66,
+          "1": 13,
+          "2": 201,
+          "3": 77,
+          "4": 5,
+          "5": 180
+        },
+        "fileEncSha256": {
+          "0": 19,
+          "1": 240,
+          "2": 33,
+          "3": 101,
+          "4": 8,
+          "5": 64
+        },
+        "directPath": "/v/t62.7118-24/31337_1_n.enc?ccb=11-4&oh=01_Q5Aa&oe=6A0B1C2D&_nc_sid=5e03e0",
+        "mediaKeyTimestamp": {
+          "low": 1792403990,
+          "high": 0,
+          "unsigned": false
+        },
+        "mimetype": "application/pdf",
+        "title": "anamnese.pdf",
+        "fileName": "anamnese.pdf",
+        "caption": "Segue a ficha",
+        "pageCount": 2
+      },
+      "messageContextInfo": {
+        "deviceListMetadata": {
+          "senderKeyHash": {
+            "0": 12,
+            "1": 201,
+            "2": 7,
+            "3": 88,
+            "4": 140,
+            "5": 3,
+            "6": 61,
+            "7": 9,
+            "8": 77,
+            "9": 211
+          },
+          "senderTimestamp": {
+            "low": 1792390000,
+            "high": 0,
+            "unsigned": true
+          },
+          "recipientKeyHash": {
+            "0": 98,
+            "1": 14,
+            "2": 230,
+            "3": 5,
+            "4": 18,
+            "5": 66,
+            "6": 190,
+            "7": 4,
+            "8": 31,
+            "9": 120
+          },
+          "recipientTimestamp": {
+            "low": 1792395000,
+            "high": 0,
+            "unsigned": true
+          }
+        },
+        "deviceListMetadataVersion": 2,
+        "messageSecret": {
+          "0": 41,
+          "1": 7,
+          "2": 255,
+          "3": 0,
+          "4": 13,
+          "5": 99,
+          "6": 180,
+          "7": 22
+        }
+      }
+    },
+    "messageType": "documentMessage",
+    "messageTimestamp": 1792404000,
+    "instanceId": "381afe88-5abf-4853-b835-fedf77635d75",
+    "source": "android"
+  },
+  "destination": "http://api:3000/internal/evolution/webhook",
+  "date_time": "2026-10-19T10:00:01.234Z",
+  "sender": "5511912345678@s.whatsapp.net",
+  "server_url": "http://evolution:8080",
+  "apikey": null
+}

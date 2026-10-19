@@ -1,0 +1,31 @@
+{
+  "status": 201,
+  "body": {
+    "key": {
+      "remoteJid": "5511987654321@s.whatsapp.net",
+      "fromMe": true,
+      "id": "3EB0FEDCBA9876543210AB"
+    },
+    "pushName": "Você",
+    "status": "PENDING",
+    "message": {
+      "conversation": "Olá! Escolha um horário:"
+    },
+    "contextInfo": {
+      "mentionedJid": [],
+      "groupMentions": [],
+      "ephemeralSettingTimestamp": {
+        "low": 1792231200,
+        "high": 0,
+        "unsigned": false
+      },
+      "disappearingMode": {
+        "initiator": 0
+      }
+    },
+    "messageType": "conversation",
+    "messageTimestamp": 1792404000,
+    "instanceId": "381afe88-5abf-4853-b835-fedf77635d75",
+    "source": "web"
+  }
+}

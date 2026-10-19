@@ -1,0 +1,17 @@
+{
+  "event": "messages.update",
+  "instance": "inst_0192f1a4-7c2e-7b51-9a0e-3f5d2c8b6e41",
+  "data": {
+    "keyId": "3EB0FEDCBA9876543210AB",
+    "remoteJid": "5511987654321@s.whatsapp.net",
+    "fromMe": true,
+    "status": "ERROR",
+    "instanceId": "381afe88-5abf-4853-b835-fedf77635d75",
+    "messageId": "cmvf9a1b20003pa7a1c2d3e4f"
+  },
+  "destination": "http://api:3000/internal/evolution/webhook",
+  "date_time": "2026-10-19T10:00:01.234Z",
+  "sender": "5511912345678@s.whatsapp.net",
+  "server_url": "http://evolution:8080",
+  "apikey": null
+}

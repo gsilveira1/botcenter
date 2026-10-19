@@ -1,0 +1,11 @@
+{
+  "status": 200,
+  "body": {
+    "status": 200,
+    "message": "Welcome to the Evolution API, it is working!",
+    "version": "2.3.7",
+    "clientName": "botcenter",
+    "documentation": "https://doc.evolution-api.com",
+    "whatsappWebVersion": "2.3000.1050809078"
+  }
+}

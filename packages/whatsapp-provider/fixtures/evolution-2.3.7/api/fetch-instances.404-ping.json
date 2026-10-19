@@ -1,0 +1,10 @@
+{
+  "status": 404,
+  "body": {
+    "status": 404,
+    "error": "Not Found",
+    "response": {
+      "message": ["Instance \"botcenter-ping\" not found"]
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "event": "connection.update",
+  "instance": "inst_0192f1a4-7c2e-7b51-9a0e-3f5d2c8b6e41",
+  "data": {
+    "instance": "inst_0192f1a4-7c2e-7b51-9a0e-3f5d2c8b6e41",
+    "state": "connecting",
+    "statusReason": 200
+  },
+  "destination": "http://host.docker.internal:18999/hook",
+  "date_time": "2026-10-19T12:48:43.457Z",
+  "server_url": "http://localhost:8080",
+  "apikey": null
+}

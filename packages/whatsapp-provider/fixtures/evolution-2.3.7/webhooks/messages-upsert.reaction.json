@@ -1,0 +1,88 @@
+{
+  "event": "messages.upsert",
+  "instance": "inst_0192f1a4-7c2e-7b51-9a0e-3f5d2c8b6e41",
+  "data": {
+    "key": {
+      "remoteJid": "5511987654321@s.whatsapp.net",
+      "remoteJidAlt": "128793450123456@lid",
+      "fromMe": false,
+      "id": "3EB0F5566778899AABBCCD",
+      "addressingMode": "pn"
+    },
+    "pushName": "Maria Silva",
+    "status": "DELIVERY_ACK",
+    "message": {
+      "reactionMessage": {
+        "key": {
+          "remoteJid": "5511987654321@s.whatsapp.net",
+          "fromMe": true,
+          "id": "3EB0FEDCBA9876543210AB"
+        },
+        "text": "👍",
+        "senderTimestampMs": {
+          "low": 1792404000,
+          "high": 417,
+          "unsigned": false
+        }
+      },
+      "messageContextInfo": {
+        "deviceListMetadata": {
+          "senderKeyHash": {
+            "0": 12,
+            "1": 201,
+            "2": 7,
+            "3": 88,
+            "4": 140,
+            "5": 3,
+            "6": 61,
+            "7": 9,
+            "8": 77,
+            "9": 211
+          },
+          "senderTimestamp": {
+            "low": 1792390000,
+            "high": 0,
+            "unsigned": true
+          },
+          "recipientKeyHash": {
+            "0": 98,
+            "1": 14,
+            "2": 230,
+            "3": 5,
+            "4": 18,
+            "5": 66,
+            "6": 190,
+            "7": 4,
+            "8": 31,
+            "9": 120
+          },
+          "recipientTimestamp": {
+            "low": 1792395000,
+            "high": 0,
+            "unsigned": true
+          }
+        },
+        "deviceListMetadataVersion": 2,
+        "messageSecret": {
+          "0": 41,
+          "1": 7,
+          "2": 255,
+          "3": 0,
+          "4": 13,
+          "5": 99,
+          "6": 180,
+          "7": 22
+        }
+      }
+    },
+    "messageType": "reactionMessage",
+    "messageTimestamp": 1792404000,
+    "instanceId": "381afe88-5abf-4853-b835-fedf77635d75",
+    "source": "android"
+  },
+  "destination": "http://api:3000/internal/evolution/webhook",
+  "date_time": "2026-10-19T10:00:01.234Z",
+  "sender": "5511912345678@s.whatsapp.net",
+  "server_url": "http://evolution:8080",
+  "apikey": null
+}

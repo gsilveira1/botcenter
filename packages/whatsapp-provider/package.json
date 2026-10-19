@@ -21,21 +21,29 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "fixtures",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run",
+    "test:int": "vitest run --config vitest.int.config.ts",
+    "fake-evolution": "node dist/testing/fake-evolution-cli.js"
   },
   "dependencies": {
-    "@botcenter/contracts": "workspace:*"
+    "@botcenter/contracts": "workspace:*",
+    "undici": "^8.12.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@botcenter/config": "workspace:*",
+    "@testcontainers/postgresql": "^12.2.1",
     "@types/node": "^24.19.2",
     "eslint": "^9.39.5",
+    "testcontainers": "^12.2.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   }
