@@ -140,6 +140,11 @@ export const EnvSchema = z.object({
   MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(900),
   /** Validity of the pre-signed download URL that the provider gets for a media message. */
   MEDIA_SEND_URL_TTL_SECONDS: positiveInt.max(86_400).default(900),
+  /**
+   * Time limit of the download of a client media `url` by the outbound worker (SEC-01). The worker stores
+   * the file in the bucket and gives the provider a pre-signed URL. At most 30 s (the external HTTP limit).
+   */
+  OUTBOUND_MEDIA_DOWNLOAD_TIMEOUT_MS: positiveInt.max(30_000).default(20_000),
 
   /**
    * Test and development only: the SSRF guard of the external HTTP client accepts private, loopback, and

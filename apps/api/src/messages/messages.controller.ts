@@ -34,9 +34,13 @@ export const SEND_DESCRIPTION = [
   '- Delivery is at least once. When a send times out, the provider can have sent the message, and',
   '  the retry (after 60 s or more) can send it a second time. After two such timeouts the status is',
   '  `failed` with `failure_reason: send_timeout`.',
+  '- A media `url` must be a public HTTPS file. A URL that resolves to a private, loopback, link-local,',
+  '  or metadata address gives 422 `MEDIA_URL_FORBIDDEN`. The worker downloads the file (no redirects,',
+  '  at most 16 MiB, a WhatsApp file type in `Content-Type`) into the private bucket and sends the copy.',
   '- `failure_reason` values: `invalid_recipient`, `instance_not_found`, `rejected`, `not_connected`,',
   '  `provider_unavailable`, `send_timeout`, `instance_deleted`, `instance_not_connected`,',
-  '  `media_not_found`, `media_not_uploaded`, `internal_error`, `provider_error`.',
+  '  `media_not_found`, `media_not_uploaded`, `media_url_forbidden`, `media_download_failed`,',
+  '  `media_too_large`, `media_type_not_accepted`, `internal_error`, `provider_error`.',
 ].join('\n');
 
 @Controller('v1/messages')

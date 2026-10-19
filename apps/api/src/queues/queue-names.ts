@@ -34,6 +34,8 @@ export interface OutboundJob {
    * queue delay metric reads it, because BullMQ keeps the creation time of the job.
    */
   readyAt?: number;
+  /** The bucket copy of the file of a media `url` (SEC-01). A retry sends it and does not download again. */
+  mediaId?: string;
 }
 
 /** `outbound`, job name `sweep`: the repeatable job that enqueues `queued` messages without a job again. */

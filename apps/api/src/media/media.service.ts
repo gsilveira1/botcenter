@@ -6,9 +6,11 @@ import type {
   MediaContent,
 } from '@botcenter/contracts';
 import type { OutboundMediaContent } from '@botcenter/whatsapp-provider';
-import { validationError } from '../common/errors/app-error';
+import { AppError, validationError } from '../common/errors/app-error';
 import { ENV } from '../config/env';
 import type { AppEnv } from '../config/env';
+import { SsrfGuard } from '../external-http/ssrf-guard';
+import { ExternalHttpError } from '../ports/external-http.port';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantsService } from '../services/tenants.service';
 import { fitsMediaType, isAcceptedContentType } from './media-types';
@@ -17,7 +19,13 @@ import { MediaStorage } from './media.storage';
 const DAY_MS = 86_400_000;
 
 /** Why the worker cannot send a media message. The value is the `failure_reason` of the message. */
-export type MediaFailureReason = 'media_not_found' | 'media_not_uploaded';
+export type MediaFailureReason =
+  | 'media_not_found'
+  | 'media_not_uploaded'
+  | 'media_url_forbidden'
+  | 'media_download_failed'
+  | 'media_too_large'
+  | 'media_type_not_accepted';
 
 export class MediaUnavailableError extends Error {
   constructor(readonly reason: MediaFailureReason) {
@@ -58,6 +66,7 @@ export class MediaService {
     private readonly storage: MediaStorage,
     private readonly tenants: TenantsService,
     @Inject(ENV) private readonly env: AppEnv,
+    private readonly guard: SsrfGuard,
   ) {}
 
   async createUpload(
@@ -101,8 +110,13 @@ export class MediaService {
   /**
    * Refuses (400) a `media_id` that the tenant does not have, or a file type that does not fit the
    * `media_type` of the message. The upload itself is checked by the worker before the send.
+   * Refuses (422 `MEDIA_URL_FORBIDDEN`) a `url` that the SSRF guard refuses now (SEC-01). The worker
+   * checks the URL again when it downloads the file, because a DNS answer can change.
    */
   async assertSendable(tenantId: string, content: MediaContent): Promise<void> {
+    if (content.url !== undefined) {
+      await this.assertUrlAllowed(content.url);
+    }
     if (content.media_id === undefined) {
       return;
     }
@@ -122,20 +136,18 @@ export class MediaService {
   /**
    * The content for the provider. A `media_id` becomes a pre-signed `GET` URL that is valid for
    * `MEDIA_SEND_URL_TTL_SECONDS`. Throws `MediaUnavailableError` when the row or the upload is missing.
+   * The provider never gets a client URL (SEC-01): the worker first stores the file of a `url` in the
+   * bucket (`MediaUrlFetcher`) and then gives its `media_id` here.
    */
   async toProviderContent(tenantId: string, content: MediaContent): Promise<OutboundMediaContent> {
+    if (content.media_id === undefined) {
+      throw new Error('A media URL must be stored in the bucket before the send (SEC-01)');
+    }
     const base = {
       type: 'media' as const,
       media_type: content.media_type,
       ...(content.caption !== undefined ? { caption: content.caption } : {}),
     };
-    if (content.media_id === undefined) {
-      return {
-        ...base,
-        url: content.url ?? '',
-        ...(content.file_name !== undefined ? { file_name: content.file_name } : {}),
-      };
-    }
     const media = await this.find(tenantId, content.media_id);
     if (!media) {
       throw new MediaUnavailableError('media_not_found');
@@ -151,6 +163,21 @@ export class MediaService {
       mime_type: media.contentType,
       ...(fileName ? { file_name: fileName } : {}),
     };
+  }
+
+  private async assertUrlAllowed(url: string): Promise<void> {
+    try {
+      await this.guard.check(url);
+    } catch (error) {
+      if (!(error instanceof ExternalHttpError)) {
+        throw error;
+      }
+      const detail =
+        error.code === 'network'
+          ? 'The host name of the media URL does not resolve'
+          : `The media URL is not allowed: ${error.message}`;
+      throw new AppError('MEDIA_URL_FORBIDDEN', detail);
+    }
   }
 
   private find(tenantId: string, mediaId: string): Promise<MediaRow | null> {

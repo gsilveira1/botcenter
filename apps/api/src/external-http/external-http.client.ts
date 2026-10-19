@@ -4,6 +4,9 @@ import type { IncomingMessage } from 'node:http';
 import type { LookupFunction } from 'node:net';
 import { ExternalHttpError } from '../ports/external-http.port';
 import type {
+  ExternalHttpBinaryPort,
+  ExternalHttpBinaryResponse,
+  ExternalHttpGetRequest,
   ExternalHttpPort,
   ExternalHttpRequest,
   ExternalHttpResponse,
@@ -28,6 +31,8 @@ const RESERVED_HEADERS = new Set([
 
 export interface ExternalHttpSendRequest {
   url: string;
+  /** Default `POST`. A `GET` sends no body (`body` must be empty). */
+  method?: 'GET' | 'POST';
   /** The exact bytes to send (a webhook signature covers them). */
   body: string;
   headers?: Record<string, string>;
@@ -43,6 +48,8 @@ export interface ExternalHttpSendRequest {
 export interface ExternalHttpRawResponse {
   status: number;
   body: Buffer;
+  /** The `Content-Type` header without parameters, in lower case, or `null`. */
+  contentType?: string | null;
 }
 
 export interface ExternalHttpClientOptions {
@@ -104,6 +111,12 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+/** `text/HTML; charset=utf-8` gives `text/html`. */
+function mediaTypeOf(header: string | undefined): string | null {
+  const value = header?.split(';')[0]?.trim().toLowerCase();
+  return value ? value : null;
+}
+
 function parseJson(body: Buffer): unknown {
   if (body.length === 0) {
     return null;
@@ -124,7 +137,7 @@ function parseJson(body: Buffer): unknown {
  * stops at the time limit, limits the response size, and sends a fixed `User-Agent`. No proxy variable
  * of the environment applies (`node:http` ignores them).
  */
-export class ExternalHttpClient implements ExternalHttpPort {
+export class ExternalHttpClient implements ExternalHttpPort, ExternalHttpBinaryPort {
   private readonly httpAgent = new http.Agent({ keepAlive: true, maxSockets: 64 });
   private readonly httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 64 });
 
@@ -143,7 +156,23 @@ export class ExternalHttpClient implements ExternalHttpPort {
     return { status: response.status, json: parseJson(response.body) };
   }
 
-  /** Sends a JSON `POST` with the exact body. Throws `ExternalHttpError` only. */
+  /** Downloads a file with a `GET` (port `EXTERNAL_HTTP_BINARY`). Throws `ExternalHttpError` only. */
+  async getBinary(request: ExternalHttpGetRequest): Promise<ExternalHttpBinaryResponse> {
+    const response = await this.send({
+      url: request.url,
+      method: 'GET',
+      body: '',
+      timeoutMs: request.timeoutMs,
+      maxResponseBytes: request.maxBytes,
+    });
+    return {
+      status: response.status,
+      contentType: response.contentType ?? null,
+      body: response.body,
+    };
+  }
+
+  /** Sends a JSON `POST` (or a `GET`) with the exact body. Throws `ExternalHttpError` only. */
   async send(request: ExternalHttpSendRequest): Promise<ExternalHttpRawResponse> {
     const timeoutMs = Math.min(Math.max(request.timeoutMs, 1), EXTERNAL_HTTP_MAX_TIMEOUT_MS);
     const signal = AbortSignal.timeout(timeoutMs);
@@ -167,7 +196,7 @@ export class ExternalHttpClient implements ExternalHttpPort {
       const outgoing = transport.request(
         target.url,
         {
-          method: 'POST',
+          method: request.method ?? 'POST',
           agent: isHttps ? this.httpsAgent : this.httpAgent,
           lookup: pinnedLookup(target.addresses),
           signal,
@@ -189,6 +218,9 @@ export class ExternalHttpClient implements ExternalHttpPort {
     const extra = Object.entries(request.headers ?? {}).filter(
       ([name]) => !RESERVED_HEADERS.has(name.toLowerCase()),
     );
+    if (request.method === 'GET') {
+      return { ...Object.fromEntries(extra), 'user-agent': EXTERNAL_HTTP_USER_AGENT };
+    }
     return {
       ...Object.fromEntries(extra),
       'content-type': 'application/json',
@@ -203,6 +235,7 @@ export class ExternalHttpClient implements ExternalHttpPort {
   ): Promise<ExternalHttpRawResponse> {
     const limit = request.maxResponseBytes ?? this.options.maxResponseBytes;
     const status = response.statusCode ?? 0;
+    const contentType = mediaTypeOf(response.headers['content-type']);
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -214,12 +247,12 @@ export class ExternalHttpClient implements ExternalHttpPort {
         }
         response.destroy();
         if (request.discardLargeBody) {
-          resolve({ status, body: Buffer.concat(chunks) });
+          resolve({ status, contentType, body: Buffer.concat(chunks) });
           return;
         }
         reject(new ExternalHttpError('response_too_large', `The response is above ${limit} bytes`));
       });
-      response.on('end', () => resolve({ status, body: Buffer.concat(chunks) }));
+      response.on('end', () => resolve({ status, contentType, body: Buffer.concat(chunks) }));
       response.on('error', reject);
     });
   }

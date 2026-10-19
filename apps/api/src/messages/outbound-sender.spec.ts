@@ -35,7 +35,7 @@ interface Setup {
   writer: { apply: ReturnType<typeof vi.fn> };
   bucket: { take: ReturnType<typeof vi.fn>; refund: ReturnType<typeof vi.fn> };
   findFirst: ReturnType<typeof vi.fn>;
-  media: { toProviderContent: ReturnType<typeof vi.fn> };
+  media: { content: ReturnType<typeof vi.fn> };
   alerts: { notify: ReturnType<typeof vi.fn> };
   order: { hasOlderQueued: ReturnType<typeof vi.fn>; promoteNext: ReturnType<typeof vi.fn> };
   metrics: MetricsService;
@@ -71,7 +71,9 @@ async function setup(): Promise<Setup> {
     take: vi.fn(async () => ({ allowed: true, waitMs: 0 })),
     refund: vi.fn(async () => {}),
   };
-  const media = { toProviderContent: vi.fn() };
+  const media = {
+    content: vi.fn(async (_job: unknown, _tenant: string, content: unknown) => content),
+  };
   const alerts = { notify: vi.fn(async () => {}) };
   const order = {
     hasOlderQueued: vi.fn(async () => false),
@@ -281,9 +283,7 @@ describe('OutboundSender', () => {
 
   it('fails a media message whose file is missing', async () => {
     s.message['content'] = { type: 'media', media_type: 'image', media_id: 'x' };
-    s.media.toProviderContent.mockRejectedValueOnce(
-      new MediaUnavailableError('media_not_uploaded'),
-    );
+    s.media.content.mockRejectedValueOnce(new MediaUnavailableError('media_not_uploaded'));
     expect(await s.sender.process(s.job)).toBe('failed');
     expect(s.writer.apply).toHaveBeenCalledWith(
       expect.anything(),

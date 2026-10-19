@@ -38,3 +38,29 @@ export interface ExternalHttpPort {
   /** Sends a JSON `POST`. Throws `ExternalHttpError` only; an HTTP error status is a normal response. */
   postJson(request: ExternalHttpRequest): Promise<ExternalHttpResponse>;
 }
+
+/**
+ * Additive port (outbound slice, SEC-01): download a file from a URL that a client supplies, with the
+ * same SSRF guard, no redirects, and a time limit. The outbound worker stores the file in the private
+ * bucket, so the provider never gets a client URL.
+ */
+export const EXTERNAL_HTTP_BINARY = Symbol('EXTERNAL_HTTP_BINARY');
+
+export interface ExternalHttpGetRequest {
+  url: string;
+  timeoutMs: number;
+  /** A larger body is `response_too_large`. */
+  maxBytes: number;
+}
+
+export interface ExternalHttpBinaryResponse {
+  status: number;
+  /** The `Content-Type` header without parameters, in lower case, or `null`. */
+  contentType: string | null;
+  body: Buffer;
+}
+
+export interface ExternalHttpBinaryPort {
+  /** Sends a `GET`. Throws `ExternalHttpError` only; an HTTP error status (also a 3xx) is a normal response. */
+  getBinary(request: ExternalHttpGetRequest): Promise<ExternalHttpBinaryResponse>;
+}

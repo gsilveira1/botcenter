@@ -5,7 +5,7 @@ import type { OutboundContent, WhatsAppProvider } from '@botcenter/whatsapp-prov
 import type { Job } from 'bullmq';
 import { getLogger } from '../logging/logger';
 import { maskPhone } from '../logging/mask';
-import { MediaService, MediaUnavailableError } from '../media/media.service';
+import { MediaUnavailableError } from '../media/media.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WHATSAPP_PROVIDER } from '../provider/provider.tokens';
@@ -14,6 +14,7 @@ import { RetryLaterError } from '../queues/worker.factory';
 import { AlertService } from '../services/alert.service';
 import { MessageStatusWriter } from './message-status.writer';
 import type { StatusTarget } from './message-status.writer';
+import { OutboundMediaPreparer } from './outbound-media';
 import { OutboundOrder, orderWaitMs } from './outbound-order';
 import { OutboundRateGate, keepReadyAt } from './outbound-rate-gate';
 import { RetryableSendError, decideRetry } from './retry-policy';
@@ -108,7 +109,7 @@ export class OutboundSender {
     @Inject(WHATSAPP_PROVIDER) private readonly provider: WhatsAppProvider,
     private readonly writer: MessageStatusWriter,
     private readonly gate: OutboundRateGate,
-    private readonly media: MediaService,
+    private readonly media: OutboundMediaPreparer,
     private readonly metrics: MetricsService,
     private readonly alerts: AlertService,
     private readonly order: OutboundOrder,
@@ -167,7 +168,7 @@ export class OutboundSender {
     }
     let content: OutboundContent;
     try {
-      content = await this.toProviderContent(message);
+      content = await this.media.content(job, message.tenantId, message.content as MessageContent);
     } catch (error) {
       if (error instanceof MediaUnavailableError) {
         return { kind: 'failed', reason: error.reason };
@@ -187,14 +188,6 @@ export class OutboundSender {
       }
       return this.onProviderError(job, message, error);
     }
-  }
-
-  private async toProviderContent(message: OutboundMessage): Promise<OutboundContent> {
-    const content = message.content as MessageContent;
-    if (content.type === 'media') {
-      return this.media.toProviderContent(message.tenantId, content);
-    }
-    return content;
   }
 
   /** Fails at once, fails after the last retry, or throws `RetryableSendError` to retry. */
