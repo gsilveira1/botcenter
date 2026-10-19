@@ -83,7 +83,8 @@ jobs:
       - name: shellcheck
         run: |
           docker run --rm -v "$PWD:/mnt:ro" -w /mnt "$SHELLCHECK_IMAGE" -x -P SCRIPTDIR:infra/backup \
-            infra/host/*.sh infra/backup/*.sh infra/scripts/*.sh infra/postgres/init/*.sh infra/docker/*.sh
+            infra/host/*.sh infra/backup/*.sh infra/scripts/*.sh infra/postgres/init/*.sh infra/docker/*.sh \
+            tests/load/*.sh
       - name: actionlint
         run: docker run --rm -v "$PWD:/repo:ro" -w /repo "$ACTIONLINT_IMAGE" -color
       - name: promtool (rules and unit tests)

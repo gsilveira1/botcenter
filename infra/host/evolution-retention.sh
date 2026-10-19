@@ -18,7 +18,7 @@ on_exit() {
 }
 trap on_exit EXIT
 
-require_commands docker curl jq
+require_commands docker curl
 days="${EVOLUTION_MESSAGE_RETENTION_DAYS:-7}"
 schema="${EVOLUTION_DB_SCHEMA:-public}"
 batch="${EVOLUTION_RETENTION_BATCH:-5000}"

@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=infra/backup/lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-require_commands df curl jq
+require_commands df curl
 threshold="${DISK_ALERT_PERCENT:-80}"
 repeat_seconds=$((${DISK_ALERT_REPEAT_HOURS:-6} * 3600))
 state_dir="${STATE_DIR:-/var/lib/botcenter/state}"

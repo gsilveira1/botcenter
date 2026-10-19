@@ -48,7 +48,7 @@ trap finish EXIT
 
 step="configuration"
 require_vars RESTIC_ENV_FILE BACKUP_HOST_TAG BACKUP_WORK_DIR METRICS_DIR
-require_commands docker curl jq
+require_commands docker curl
 [[ -r "$RESTIC_ENV_FILE" ]] || {
   log_error "cannot read RESTIC_ENV_FILE ($RESTIC_ENV_FILE)"
   exit 1

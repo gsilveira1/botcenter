@@ -43,6 +43,17 @@ require_commands() {
   done
 }
 
+# json_escape TEXT : prints TEXT as the content of a JSON string (no jq: an alert must work without it).
+json_escape() {
+  local text="$1"
+  text="${text//\\/\\\\}"
+  text="${text//\"/\\\"}"
+  text="${text//$'\n'/\\n}"
+  text="${text//$'\r'/\\r}"
+  text="${text//$'\t'/\\t}"
+  printf '%s' "$text" | tr -d '\000-\037'
+}
+
 # alert MESSAGE : sends a message to the Discord operations channel. A failed post is logged,
 # but it does not hide the original failure.
 alert() {
@@ -53,7 +64,7 @@ alert() {
     return 0
   fi
   local payload
-  payload="$(jq -n --arg content "${message:0:1900}" '{content: $content}')"
+  payload="{\"content\":\"$(json_escape "${message:0:1900}")\"}"
   if ! curl -fsS -m 10 -H 'Content-Type: application/json' -d "$payload" "$ALERT_DISCORD_WEBHOOK_URL" >/dev/null; then
     log_error "the post to ALERT_DISCORD_WEBHOOK_URL failed"
   fi
