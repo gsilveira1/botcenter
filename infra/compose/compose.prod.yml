@@ -1,0 +1,372 @@
+# Production stack of Bot Center, phase 1: one host (Hetzner CX32: 4 vCPU, 8 GB).
+# Procedures: docs/runbook.md. For the 4 GB CX22 start host, add compose.prod.cx22.yml (see that file).
+#
+#   cd /opt/botcenter
+#   docker compose -f infra/compose/compose.prod.yml --env-file /etc/botcenter/compose.env config -q
+#   docker compose -f infra/compose/compose.prod.yml --env-file /etc/botcenter/compose.env pull
+#   docker compose -f infra/compose/compose.prod.yml --env-file /etc/botcenter/compose.env up -d
+#
+# Rules of this file (architecture, section "Segurança"):
+#   - Caddy is the only service with `ports:`. Uptime Kuma is on 127.0.0.1:3001 through Caddy (SSH tunnel).
+#   - Networks: `edge` (Caddy, API, Uptime Kuma), `internal` (no route to the internet: API, workers,
+#     Evolution, PostgreSQL, Redis, Alloy, migrate), and `egress` (internet access without inbound ports:
+#     workers for the client webhooks and R2, Evolution for WhatsApp, Alloy for Grafana Cloud).
+#   - Every service: `no-new-privileges`, `cap_drop: [ALL]`, a memory limit, a health check, and JSON logs
+#     with the Compose service label (Alloy reads the log files; no Docker socket in any container).
+#   - Secrets come from env files in ${BOTCENTER_ENV_DIR:-/etc/botcenter} (mode 600, made by
+#     infra/scripts/gen-secrets.sh). No secret is in this file or in an image.
+name: botcenter
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: '5'
+    # Alloy reads `attrs` of each line to get the service name (no Docker socket).
+    labels: com.docker.compose.service,com.docker.compose.project
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *logging
+
+x-app: &app
+  <<: *hardening
+  image: ${BOTCENTER_IMAGE:?Set BOTCENTER_IMAGE (ghcr.io/<owner>/botcenter-api:<tag>@sha256:<digest>) in compose.env}
+  user: '1000:1000'
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  env_file:
+    - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/api.env
+  stop_grace_period: 30s
+
+services:
+  caddy:
+    <<: *hardening
+    image: caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af
+    user: '1000:1000'
+    # The only capability: bind the ports 80 and 443 as a non-root user.
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    env_file:
+      - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/caddy.env
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - '80:80'
+      - '443:443'
+      # Uptime Kuma UI. Only the host can open it: `ssh -L 3001:127.0.0.1:3001 <tailscale host>`.
+      - '127.0.0.1:3001:3001'
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The Cloudflare ranges for `trusted_proxies`. infra/host/firewall-cloudflare.sh keeps the host copy current.
+      - ${CADDY_CLOUDFLARE_IPS_FILE:-../caddy/cloudflare-ips.caddy}:/etc/caddy/cloudflare-ips.caddy:ro
+      # Cloudflare origin certificate (TLS mode `origin`). An empty directory is valid in the ACME mode.
+      - ${BOTCENTER_ENV_DIR:-/etc/botcenter}/certs:/etc/caddy/certs:ro
+      - caddy-data:/data/caddy
+    tmpfs:
+      - /config/caddy:size=1m,mode=1777
+    networks:
+      - edge
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8081/healthz']
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # One-shot: `prisma migrate deploy` with the owner role. `api` and `worker` start only after it succeeds.
+  migrate:
+    <<: *app
+    restart: 'no'
+    command: ['pnpm', '--filter', '@botcenter/api', 'db:migrate']
+    # Only the owner URL (DATABASE_URL_MIGRATE). The API and the workers never get the owner password.
+    env_file:
+      - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/migrate.env
+    environment:
+      ROLE: migrate
+      HOME: /tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+    healthcheck:
+      disable: true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  api:
+    <<: *app
+    environment:
+      ROLE: api
+      PORT: '3000'
+      NODE_OPTIONS: --max-old-space-size=${API_HEAP_MB:-384}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      evolution:
+        condition: service_started
+    networks:
+      - edge
+      - internal
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:3000/health/live']
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEMORY:-512M}
+
+  worker:
+    <<: *app
+    environment:
+      ROLE: worker
+      WORKER_METRICS_PORT: '9464'
+      NODE_OPTIONS: --max-old-space-size=${WORKER_HEAP_MB:-768}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      evolution:
+        condition: service_started
+    networks:
+      - internal
+      - egress
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:9464/metrics']
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: ${WORKER_MEMORY:-1G}
+
+  evolution:
+    <<: *hardening
+    # Pinned by tag and digest. Update it only with docs/runbook.md, procedure "Update the Evolution API".
+    image: evoapicloud/evolution-api:v2.3.7@sha256:1bd8afc4a6cf48822e6cf02469aeae7bd35a12a6b616eacd1291926307f4d339
+    # The official image runs as root, and its entrypoint writes to /evolution/prisma and to node_modules
+    # (migrations and `prisma generate` at each start). Thus no `user:` and no `read_only:`.
+    # It has no capability, no inbound port, and no route from the internet.
+    env_file:
+      - path: ./evolution.flags.env
+      - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/evolution.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - evolution-instances:/evolution/instances
+    networks:
+      - internal
+      - egress
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: ${EVOLUTION_MEMORY:-3G}
+
+  postgres:
+    <<: *hardening
+    image: postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    # uid 70 is `postgres` in the Alpine image. The data directory of the image belongs to it.
+    user: '70:70'
+    read_only: true
+    env_file:
+      - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/postgres.env
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-512MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-1536MB}
+      - -c
+      - work_mem=${PG_WORK_MEM:-8MB}
+      - -c
+      - maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}
+      - -c
+      - max_connections=${PG_MAX_CONNECTIONS:-100}
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - password_encryption=scram-sha-256
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../postgres/init:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /var/run/postgresql:size=1m,mode=1777
+      - /tmp:size=64m,mode=1777
+    shm_size: 256m
+    stop_grace_period: 60s
+    networks:
+      - internal
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d botcenter']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEMORY:-2G}
+
+  redis:
+    <<: *hardening
+    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    # uid 999 is `redis` in the Alpine image. The /data directory of the image belongs to it.
+    user: '999:999'
+    read_only: true
+    env_file:
+      - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/redis.env
+    # AOF everysec: at most 1 s of queue writes is lost on a crash.
+    # noeviction: BullMQ must never lose a key. A full Redis refuses writes, and the API reports the error.
+    # maxmemory stays below the container limit, so the AOF rewrite (fork) has space.
+    command:
+      - sh
+      - -c
+      - >-
+        exec redis-server
+        --appendonly yes
+        --appendfsync everysec
+        --save ''
+        --maxmemory ${REDIS_MAXMEMORY:-384mb}
+        --maxmemory-policy noeviction
+        --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - redis-data:/data
+    stop_grace_period: 30s
+    networks:
+      - internal
+    healthcheck:
+      test: ['CMD-SHELL', 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEMORY:-512M}
+
+  uptime-kuma:
+    <<: *hardening
+    # The rootless variant runs as `node` (uid 1000). The slim variant has no embedded MariaDB or Chromium.
+    image: louislam/uptime-kuma:2.5.6-slim-rootless@sha256:6eb4e96a7cbdb8a5d6779aa26dce2cb97dcea65b486856b9b2280f73a1d0adf4
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      - uptime-kuma-data:/app/data
+    networks:
+      - edge
+    healthcheck:
+      test: ['CMD', '/app/extra/healthcheck']
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 180s
+    deploy:
+      resources:
+        limits:
+          memory: ${UPTIME_KUMA_MEMORY:-192M}
+
+  alloy:
+    <<: *hardening
+    image: grafana/alloy:v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
+    # Root without capabilities: it reads the root-owned Docker log files (owner permission, no
+    # DAC_OVERRIDE). Every host path is read-only. No Docker socket.
+    user: '0:0'
+    read_only: true
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy-data
+      - --server.http.listen-addr=127.0.0.1:12345
+      - --disable-reporting
+    env_file:
+      - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/alloy.env
+    environment:
+      BOTCENTER_ENVIRONMENT: ${BOTCENTER_ENVIRONMENT:-production}
+    volumes:
+      - ../observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy-data
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+      - /run/udev/data:/run/udev/data:ro
+      # Text file metrics of the host scripts (backup, restore test).
+      - /var/lib/botcenter/metrics:/host/textfile:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks:
+      - internal
+      - egress
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/12345 && printf 'GET /-/ready HTTP/1.0\r\n\r\n' >&3 && grep -q '200 OK' <&3
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${ALLOY_MEMORY:-192M}
+
+networks:
+  edge:
+    name: botcenter-edge
+  internal:
+    name: botcenter-internal
+    internal: true
+  egress:
+    name: botcenter-egress
+
+volumes:
+  postgres-data:
+    name: botcenter-postgres-data
+  redis-data:
+    name: botcenter-redis-data
+  evolution-instances:
+    name: botcenter-evolution-instances
+  caddy-data:
+    name: botcenter-caddy-data
+  uptime-kuma-data:
+    name: botcenter-uptime-kuma-data
+  alloy-data:
+    name: botcenter-alloy-data
