@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { ConversationResponse, HandoffRequest } from '@botcenter/contracts';
 import { timerForState, timerJobId } from '@botcenter/engine';
+import type { TimerPlan } from '@botcenter/engine';
 import { assertInstanceAllowed, auditActor } from '../auth/auth-context';
 import type { AuthContext } from '../auth/auth-context';
 import { AppError, notFound } from '../common/errors/app-error';
@@ -55,8 +56,9 @@ export class ConversationsService {
       if (row.handoff === (target === 'human')) {
         return toConversationResponse(row);
       }
+      const timer = target === 'bot' ? await this.timerAfterHandoff(row) : null;
       try {
-        await this.writeHandoff(auth, row, target);
+        await this.writeHandoff(auth, row, target, timer);
       } catch (error) {
         if (error instanceof HandoffConflict) {
           this.metrics.conflicts.inc({ result: 'retried' });
@@ -64,7 +66,7 @@ export class ConversationsService {
         }
         throw error;
       }
-      await this.afterHandoff(row, target);
+      await this.afterHandoff(row, target, timer);
       return toConversationResponse(await this.load(auth, id));
     }
     this.metrics.conflicts.inc({ result: 'exhausted' });
@@ -87,13 +89,14 @@ export class ConversationsService {
     auth: AuthContext,
     row: ConversationWithResponseData,
     target: HandoffRequest['to'],
+    timer: TimerPlan | null,
   ): Promise<void> {
     const handoff = target === 'human';
     await this.prisma.forTenant(auth.tenantId).$transaction(async (scoped) => {
       const tx = scoped as unknown as TransactionClient;
       const updated = await tx.conversation.updateMany({
         where: { id: row.id, tenantId: auth.tenantId, version: row.version },
-        data: { handoff, version: row.version + 1 },
+        data: { handoff, version: row.version + 1, timerFireAt: timer?.fireAt ?? null },
       });
       if (updated.count !== 1) {
         throw new HandoffConflict();
@@ -127,19 +130,10 @@ export class ConversationsService {
   }
 
   /**
-   * After the commit: drop the hot cache entry, then remove the pending timer (`human`) or arm the timer
-   * of the current state with the new version (`bot`, engine open problem 2).
+   * The timer of the current state for the version after a handoff to the bot (engine open problem 2).
+   * The write stores its fire time (ARCH-08). A missing bot version arms no timer.
    */
-  private async afterHandoff(
-    row: ConversationWithResponseData,
-    target: HandoffRequest['to'],
-  ): Promise<void> {
-    await this.cache.delete(row.instanceId, row.contact);
-    if (target === 'human') {
-      await this.timers.cancel(timerJobId(row.id, row.version));
-      return;
-    }
-    const now = new Date();
+  private async timerAfterHandoff(row: ConversationWithResponseData): Promise<TimerPlan | null> {
     const loaded = await this.definitions
       .version(row.tenantId, row.botId, row.botVersion)
       .catch((error: unknown) => {
@@ -153,16 +147,36 @@ export class ConversationsService {
         return null;
       });
     if (!loaded) {
-      return;
+      return null;
     }
-    const plan = timerForState(loaded.definition, {
+    return timerForState(loaded.definition, {
       conversationId: row.id,
       state: row.state,
       version: row.version + 1,
-      now,
+      now: new Date(),
     });
-    if (plan) {
-      await this.timers.schedule(plan, { tenantId: row.tenantId, conversationId: row.id }, now);
+  }
+
+  /**
+   * After the commit: drop the hot cache entry, then remove the pending timer (`human`) or add the timer
+   * of the current state with the new version (`bot`).
+   */
+  private async afterHandoff(
+    row: ConversationWithResponseData,
+    target: HandoffRequest['to'],
+    timer: TimerPlan | null,
+  ): Promise<void> {
+    await this.cache.delete(row.instanceId, row.contact);
+    if (target === 'human') {
+      await this.timers.cancel(timerJobId(row.id, row.version));
+      return;
+    }
+    if (timer) {
+      await this.timers.schedule(
+        timer,
+        { tenantId: row.tenantId, conversationId: row.id },
+        new Date(),
+      );
     }
   }
 }

@@ -297,6 +297,9 @@ model Conversation {
   /// The worker maps a text reply (`1`, `2`, or a title) to a button or list reply with it.
   lastMenu      Json?
   lastInboundAt DateTime? @db.Timestamptz(3)
+  /// The fire time of the state timer of the current `version` (job `timer-<id>-v<version>`), or `null`.
+  /// The step writes it in its transaction. The `sweep-inbound` job adds a lost timer job again (ARCH-08).
+  timerFireAt   DateTime? @db.Timestamptz(3)
   createdAt     DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
 
@@ -309,6 +312,8 @@ model Conversation {
   @@unique([instanceId, contact])
   @@index([tenantId])
   @@index([botId])
+  /// The conversations with an armed state timer (the timer repair reads the overdue ones).
+  @@index([timerFireAt], map: "conversations_timer_fire_at_idx", where: raw("(\"timerFireAt\" IS NOT NULL)"))
   @@map("conversations")
 }
 

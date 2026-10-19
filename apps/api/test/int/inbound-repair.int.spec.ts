@@ -4,7 +4,9 @@ import { newMessageId } from '@botcenter/whatsapp-provider/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ConversationsApiModule } from '../../src/conversations/conversations.module';
 import { InboundStoreService } from '../../src/conversations/worker/inbound-store.service';
+import { timerJobId } from '@botcenter/engine';
 import { InstanceResolver } from '../../src/conversations/worker/instance-context';
+import { MessageReceivedHandler } from '../../src/conversations/worker/message-received.handler';
 import type { Instance } from '../../src/generated/prisma/client';
 import { INBOUND_SWEEP_JOB, INBOUND_SWEEP_SCHEDULER } from '../../src/inbound/inbound.worker';
 import { EXTERNAL_HTTP } from '../../src/ports/external-http.port';
@@ -77,6 +79,30 @@ function textEvent(s: Setup, contact: string, text: string) {
   };
 }
 
+const timed: BotDefinitionInput = {
+  initial_state: 'espera',
+  states: {
+    espera: {
+      timeout: { after_seconds: 600, target: 'lembrete' },
+      transitions: [{ condition: { type: 'text', equals: ['a'] }, target: 'fim' }],
+    },
+    lembrete: { transitions: [] },
+    fim: { transitions: [], final: true },
+  },
+};
+
+/** Runs the inbound handler for one text message, like the inbound worker. */
+async function say(s: Setup, contact: string, text: string): Promise<void> {
+  await worker.get(MessageReceivedHandler).handle(textEvent(s, contact, text), {
+    jobId: 'j',
+    attemptsMade: 0,
+    rawEventId: null,
+    receivedAt: new Date(),
+  });
+}
+
+const timers = () => h.get(QueuesService).get('timers');
+
 function conversationOf(s: Setup, contact: string) {
   return h.prisma.conversation.findUnique({
     where: { instanceId_contact: { instanceId: s.instance.id, contact } },
@@ -126,5 +152,51 @@ describe('lost inbound work (ARCH-01)', () => {
 
     const row = await h.prisma.message.findUniqueOrThrow({ where: { id: stored.messageId } });
     expect(row.botPending).toBe(true);
+  });
+});
+
+describe('lost state timer (ARCH-08)', () => {
+  it('stores the fire time with the step and adds a lost timer job again', async () => {
+    const s = await setup(timed);
+    const contact = nextContact();
+    await say(s, contact, 'Oi');
+    const started = (await conversationOf(s, contact))!;
+    expect(started).toMatchObject({ state: 'espera', version: 0 });
+    expect(started.timerFireAt!.getTime()).toBeGreaterThan(Date.now() + 500_000);
+
+    // Redis lost the job, and the fire time passed.
+    await timers().remove(timerJobId(started.id, 0));
+    await h.prisma.conversation.update({
+      where: { id: started.id },
+      data: { timerFireAt: new Date(Date.now() - 5 * 60_000) },
+    });
+
+    await runSweep();
+
+    await waitFor(async () => (await conversationOf(s, contact))?.state === 'lembrete');
+    const reminded = (await conversationOf(s, contact))!;
+    expect(reminded.version).toBe(1);
+    // The state `lembrete` has no timeout: nothing is armed.
+    expect(reminded.timerFireAt).toBeNull();
+  });
+
+  it('clears the fire time when the timer ran and changed nothing', async () => {
+    const s = await setup(timed);
+    const contact = nextContact();
+    await say(s, contact, 'Oi');
+    const started = (await conversationOf(s, contact))!;
+    const job = await timers().getJob(timerJobId(started.id, 0));
+    // A handoff runs at the same time as the timer: the timer is stale and completes as a no-op.
+    await h.prisma.conversation.update({ where: { id: started.id }, data: { handoff: true } });
+    await job!.promote();
+    await waitFor(async () => (await job!.isCompleted()) || (await job!.isFailed()));
+    await h.prisma.conversation.update({
+      where: { id: started.id },
+      data: { handoff: false, timerFireAt: new Date(Date.now() - 5 * 60_000) },
+    });
+
+    await runSweep();
+
+    expect((await conversationOf(s, contact))!.timerFireAt).toBeNull();
   });
 });

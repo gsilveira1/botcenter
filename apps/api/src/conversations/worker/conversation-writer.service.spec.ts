@@ -152,4 +152,25 @@ describe('ConversationWriter', () => {
     expect(tx.message.updateMany).toHaveBeenCalled();
     expect(outcome.record.version).toBe(4);
   });
+
+  it('stores the fire time of the new state timer in the step transaction (ARCH-08)', async () => {
+    const armed = build();
+    const fireAt = new Date('2026-10-19T13:00:00.000Z');
+    await armed.writer.write(
+      plan({
+        result: result({ timer: { state: 'b', version: 5, jobId: 'timer-x-v5', fireAt } }),
+      }),
+    );
+    expect(armed.tx.conversation.updateMany).toHaveBeenCalledWith({
+      where: { id: CONVERSATION, tenantId: TENANT, version: 4 },
+      data: expect.objectContaining({ timerFireAt: fireAt }),
+    });
+
+    const none = build();
+    await none.writer.write(plan());
+    expect(none.tx.conversation.updateMany).toHaveBeenCalledWith({
+      where: { id: CONVERSATION, tenantId: TENANT, version: 4 },
+      data: expect.objectContaining({ timerFireAt: null }),
+    });
+  });
 });

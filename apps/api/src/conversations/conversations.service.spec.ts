@@ -40,12 +40,12 @@ const row = {
   transitions: [],
 };
 
-function build(updatedCount: number) {
+function build(updatedCount: number, changes: Partial<typeof row> = {}, definitions: unknown = {}) {
   const tx = {
     conversation: { updateMany: vi.fn(async () => ({ count: updatedCount })) },
     conversationTransition: { create: vi.fn(async () => ({})) },
   };
-  const findUnique = vi.fn(async () => row);
+  const findUnique = vi.fn(async () => ({ ...row, ...changes }));
   const prisma = {
     forTenant: () => ({
       conversation: { findUnique },
@@ -59,7 +59,7 @@ function build(updatedCount: number) {
     { record: vi.fn(async () => 'a1') } as unknown as AuditService,
     { delete: vi.fn(async () => undefined) } as unknown as ConversationCacheService,
     timers as unknown as ConversationTimersService,
-    {} as BotDefinitionsService,
+    definitions as BotDefinitionsService,
     new ConversationMetrics(new MetricsService(testEnv())),
   );
   return { service, tx, timers, findUnique };
@@ -80,7 +80,7 @@ describe('ConversationsService.handoff', () => {
     await service.handoff(auth, 'c1', 'human');
     expect(tx.conversation.updateMany).toHaveBeenCalledWith({
       where: { id: 'c1', tenantId: 't1', version: 2 },
-      data: { handoff: true, version: 3 },
+      data: { handoff: true, version: 3, timerFireAt: null },
     });
     expect(timers.cancel).toHaveBeenCalledWith('timer-c1-v2');
   });
@@ -92,5 +92,28 @@ describe('ConversationsService.handoff', () => {
       code: 'INSTANCE_NOT_ALLOWED',
     });
     expect(tx.conversation.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('stores the fire time of the timer that a handoff to the bot arms (ARCH-08)', async () => {
+    const definitions = {
+      version: vi.fn(async () => ({
+        definition: {
+          initial_state: 'inicio',
+          states: { inicio: { transitions: [], timeout: { after_seconds: 60, target: 'inicio' } } },
+        },
+      })),
+    };
+    const { service, tx, timers } = build(1, { handoff: true }, definitions);
+    await service.handoff(auth, 'c1', 'bot');
+    const data = (
+      tx.conversation.updateMany.mock.calls[0] as unknown as [{ data: Record<string, unknown> }]
+    )[0].data;
+    expect(data).toMatchObject({ handoff: false, version: 3 });
+    expect(data['timerFireAt']).toBeInstanceOf(Date);
+    expect(timers.schedule).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'timer-c1-v3', fireAt: data['timerFireAt'] }),
+      { tenantId: 't1', conversationId: 'c1' },
+      expect.any(Date),
+    );
   });
 });

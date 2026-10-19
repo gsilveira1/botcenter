@@ -94,6 +94,8 @@ export class ConversationWriter {
       version: result.version,
       handoff: result.handoff,
       lastMenu: plan.lastMenu === null ? Prisma.DbNull : json(plan.lastMenu),
+      // ARCH-08: the timer of the new version is in the same commit, so a lost job can be repaired.
+      timerFireAt: result.timer?.fireAt ?? null,
       ...lastInboundAt,
     };
     if (plan.expectedVersion === null) {

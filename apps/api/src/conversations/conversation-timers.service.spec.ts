@@ -44,7 +44,7 @@ describe('ConversationTimersService', () => {
     add.mockRejectedValueOnce(new Error('redis down'));
     await expect(
       service.schedule(plan, { tenantId: 't1', conversationId: 'c1' }, now),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(false);
     expect(alerts.notify).toHaveBeenCalledTimes(1);
     remove.mockRejectedValueOnce(new Error('locked'));
     await expect(service.cancel('timer-c1-v2')).resolves.toBeUndefined();
