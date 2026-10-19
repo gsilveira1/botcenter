@@ -68,4 +68,28 @@ describe('MessageStatusWriter', () => {
       expect.objectContaining({ data: { status: 'sent', providerMessageId: 'WAID', sentAt: at } }),
     );
   });
+
+  it('counts the sent and failed changes for each instance (ARCH-06), not the later statuses', async () => {
+    const s = setup(1);
+    await s.writer.apply(TARGET, { status: 'sent', providerMessageId: 'WAID', at: new Date() });
+    await s.writer.apply(TARGET, { status: 'delivered', at: new Date() });
+    await s.writer.apply(
+      { ...TARGET, instanceId: 'i-2' },
+      { status: 'failed', reason: 'not_connected', at: new Date() },
+    );
+    const text = await s.metrics.render();
+    expect(text).toContain(
+      'botcenter_instance_messages_total{instance_id="i-1",status="sent",role="api"} 1',
+    );
+    expect(text).toContain(
+      'botcenter_instance_messages_total{instance_id="i-2",status="failed",role="api"} 1',
+    );
+    expect(text).not.toMatch(/botcenter_instance_messages_total\{[^}]*status="delivered"/);
+  });
+
+  it('does not count a change that another writer made first', async () => {
+    const s = setup(0);
+    await s.writer.apply(TARGET, { status: 'sent', providerMessageId: 'WAID', at: new Date() });
+    expect(await s.metrics.render()).not.toMatch(/botcenter_instance_messages_total\{/);
+  });
 });

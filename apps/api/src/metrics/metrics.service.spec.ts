@@ -10,6 +10,7 @@ const FIXED_NAMES = [
   'botcenter_queue_delay_seconds',
   'botcenter_queue_size',
   'botcenter_messages_total',
+  'botcenter_instance_messages_total',
   'botcenter_webhook_deliveries_total',
   'botcenter_rate_limit_denied_total',
   'http_request_duration_seconds',

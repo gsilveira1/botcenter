@@ -31,6 +31,11 @@ export class MetricsService {
   readonly queueSize: Gauge<'queue' | 'state'>;
   /** Outbound and inbound messages by status (`queued`, `sent`, `delivered`, `read`, `failed`, `received`). */
   readonly messagesTotal: Counter<'status'>;
+  /**
+   * Outbound sends that ended, for each instance (`status`: `sent` or `failed`). The alert "failure
+   * rate of one instance" uses it. The label `instance_id` is the instance uuid (no phone number).
+   */
+  readonly instanceMessagesTotal: Counter<'instance_id' | 'status'>;
   /** Webhook delivery attempts by result (`succeeded`, `failed`, `dead`). */
   readonly webhookDeliveriesTotal: Counter<'result'>;
   /** Requests or sends refused by a rate limit (`scope`: `key` or `instance`). */
@@ -72,6 +77,11 @@ export class MetricsService {
       name: 'botcenter_messages_total',
       help: 'Messages by status change',
       labelNames: ['status'],
+    });
+    this.instanceMessagesTotal = this.counter({
+      name: 'botcenter_instance_messages_total',
+      help: 'Outbound sends that ended as sent or failed, for each instance',
+      labelNames: ['instance_id', 'status'],
     });
     this.webhookDeliveriesTotal = this.counter({
       name: 'botcenter_webhook_deliveries_total',
