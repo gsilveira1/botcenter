@@ -209,7 +209,7 @@ describe('ConversationStepService.applyMessage', () => {
     const { service, writer, definitions, alerts } = build(record());
     alerts.notify.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
     definitions.version.mockRejectedValueOnce(new BotDataError('missing version'));
-    await expect(service.applyMessage(instance, message('Oi'))).resolves.toEqual([]);
+    await expect(service.applyMessage(instance, message('Oi'))).resolves.toBeUndefined();
     expect(writer.consumeOnly).toHaveBeenCalled();
   });
 
