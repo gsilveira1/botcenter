@@ -5,11 +5,11 @@ import type { AlertService } from '../services/alert.service';
 import type { QuotaService } from './quota.service';
 import { RateLimitService } from './rate-limit.service';
 
-function build(consume: () => Promise<unknown>) {
+function build(consume: () => Promise<unknown>, peek: () => Promise<unknown> = consume) {
   const metrics = new MetricsService(testEnv());
   const alerts = { notify: vi.fn(async () => undefined) };
   const service = new RateLimitService(
-    { consume: vi.fn(consume) } as unknown as QuotaService,
+    { consume: vi.fn(consume), peek: vi.fn(peek) } as unknown as QuotaService,
     metrics,
     alerts as unknown as AlertService,
   );
@@ -49,5 +49,35 @@ describe('RateLimitService', () => {
     expect(alerts.notify).toHaveBeenCalledWith(
       expect.objectContaining({ dedupeKey: 'rate-limit:redis' }),
     );
+  });
+
+  it('refuses an address above the failure limit with 429 and fails open on a Redis error (SEC-10)', async () => {
+    const limited = build(
+      async () => result(true),
+      async () => result(false),
+    );
+    await expect(limited.service.assertAuthFailuresBelowLimit('203.0.113.1')).rejects.toMatchObject(
+      {
+        code: 'RATE_LIMITED',
+        headers: { 'Retry-After': '12' },
+      },
+    );
+    const metric = await limited.metrics.rateLimitDeniedTotal.get();
+    expect(metric.values).toEqual([{ labels: { scope: 'ip_auth_failures' }, value: 1 }]);
+
+    const down = build(async () => Promise.reject(new Error('ECONNREFUSED')));
+    await expect(down.service.assertAuthFailuresBelowLimit('203.0.113.1')).resolves.toBeUndefined();
+    await expect(down.service.recordAuthFailure('203.0.113.1')).resolves.toBeUndefined();
+    await expect(down.service.consumeConnect('203.0.113.1')).resolves.toBeUndefined();
+    expect(down.alerts.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ dedupeKey: 'rate-limit:ip:redis' }),
+    );
+  });
+
+  it('refuses the connect route above the limit of the address (SEC-10)', async () => {
+    const { service } = build(async () => result(false));
+    await expect(service.consumeConnect('203.0.113.1')).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+    });
   });
 });

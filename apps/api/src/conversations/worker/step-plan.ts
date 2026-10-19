@@ -1,4 +1,5 @@
 import type { EngineResult } from '@botcenter/engine';
+import type { DeliveryJobRef } from '../../webhooks/webhook-delivery.jobs';
 import type { LoadedBotVersion } from '../bot-definitions.service';
 import type { ConversationRecord } from '../conversation-record';
 import type { LastMenu } from '../menu-reply';
@@ -33,6 +34,8 @@ export interface WrittenReply {
 export interface StepOutcome {
   record: ConversationRecord;
   replies: WrittenReply[];
+  /** The `call_webhook` rows that the step wrote (ARCH-04). The worker dispatches them after the commit. */
+  webhookCalls: DeliveryJobRef[];
 }
 
 /** The `version` of the row changed after the load: reload and run the step again. */

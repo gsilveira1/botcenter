@@ -134,6 +134,7 @@ model Tenant {
   outboxEvents         OutboxEvent[]
   webhookSubscriptions WebhookSubscription[]
   webhookDeliveries    WebhookDelivery[]
+  botWebhookCalls      BotWebhookCall[]
   idempotencyKeys      IdempotencyKey[]
   mediaObjects         MediaObject[]
 
@@ -246,18 +247,25 @@ model ConnectToken {
 
 /// A bot. The public id is `slug` (`PUT /v1/bots/{slug}`), unique in the tenant.
 model Bot {
-  id             String   @id @default(uuid(7)) @db.Uuid
-  tenantId       String   @db.Uuid
-  slug           String
-  name           String
-  currentVersion Int
-  createdAt      DateTime @default(now()) @db.Timestamptz(3)
-  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+  id                      String    @id @default(uuid(7)) @db.Uuid
+  tenantId                String    @db.Uuid
+  slug                    String
+  name                    String
+  currentVersion          Int
+  /// The secret that signs the `external` and `call_webhook` requests (SecretBox, additional data = bot id).
+  /// `null` for a bot of an older version: the next `PUT` or rotation makes one.
+  secretEncrypted         String?
+  /// The secret before the last rotation. The requests sign with both until `previousSecretExpiresAt`.
+  previousSecretEncrypted String?
+  previousSecretExpiresAt DateTime? @db.Timestamptz(3)
+  createdAt               DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime  @updatedAt @db.Timestamptz(3)
 
-  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  tenant        Tenant           @relation(fields: [tenantId], references: [id])
   versions      BotVersion[]
   instances     Instance[]
   conversations Conversation[]
+  webhookCalls  BotWebhookCall[]
 
   @@unique([tenantId, slug])
   @@map("bots")
@@ -305,17 +313,20 @@ model Conversation {
   createdAt     DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
 
-  tenant      Tenant                   @relation(fields: [tenantId], references: [id])
-  instance    Instance                 @relation(fields: [instanceId], references: [id])
-  bot         Bot                      @relation(fields: [botId], references: [id])
-  transitions ConversationTransition[]
-  messages    Message[]
+  tenant       Tenant                   @relation(fields: [tenantId], references: [id])
+  instance     Instance                 @relation(fields: [instanceId], references: [id])
+  bot          Bot                      @relation(fields: [botId], references: [id])
+  transitions  ConversationTransition[]
+  messages     Message[]
+  webhookCalls BotWebhookCall[]
 
   @@unique([instanceId, contact])
   @@index([tenantId])
   @@index([botId])
   /// The conversations with an armed state timer (the timer repair reads the overdue ones).
   @@index([timerFireAt], map: "conversations_timer_fire_at_idx", where: raw("(\"timerFireAt\" IS NOT NULL)"))
+  /// `purge-conversations` reads the conversations of a tenant without activity (SEC-05).
+  @@index([tenantId, updatedAt])
   @@map("conversations")
 }
 
@@ -375,6 +386,8 @@ model Message {
   @@index([tenantId, createdAt])
   @@index([instanceId, contact])
   @@index([conversationId])
+  /// `check-alerts` reads the outbound messages of the last 10 minutes every minute (ARCH-14).
+  @@index([direction, createdAt])
   /// The inbound messages that wait for the bot step of their conversation.
   @@index([instanceId, contact, createdAt], map: "messages_bot_pending_idx", where: raw("\"botPending\""))
   @@map("messages")
@@ -474,6 +487,9 @@ model WebhookDelivery {
   lastStatusCode Int?
   lastError      String?
   nextAttemptAt  DateTime?             @db.Timestamptz(3)
+  /// End of the lease of the attempt in progress (`null` when no worker holds the row). A redelivery
+  /// waits until it passes, so one event is not sent two times at once.
+  leaseExpiresAt DateTime?             @db.Timestamptz(3)
   createdAt      DateTime              @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime              @updatedAt @db.Timestamptz(3)
 
@@ -483,7 +499,41 @@ model WebhookDelivery {
   @@unique([subscriptionId, eventId])
   @@index([status, nextAttemptAt])
   @@index([tenantId, createdAt])
+  /// `check-alerts` reads the deliveries that changed in the last 15 minutes every minute (ARCH-14).
+  @@index([updatedAt])
   @@map("webhook_deliveries")
+}
+
+/// One `call_webhook` action of a bot step (outbox pattern, ARCH-04). The step transaction writes it, and
+/// the `webhooks` queue delivers it with the lease, the retry schedule, and the dead state of the webhook
+/// deliveries. `id` is the `Webhook-Id` header.
+model BotWebhookCall {
+  id             String                @id @default(uuid(7)) @db.Uuid
+  tenantId       String                @db.Uuid
+  botId          String                @db.Uuid
+  conversationId String                @db.Uuid
+  url            String
+  /// The conversation context body. Personal data: deleted with the conversation or after the retention.
+  payload        Json
+  status         WebhookDeliveryStatus @default(pending)
+  attempts       Int                   @default(0)
+  lastStatusCode Int?
+  lastError      String?
+  nextAttemptAt  DateTime?             @db.Timestamptz(3)
+  /// End of the lease of the attempt in progress (`null` when no worker holds the row).
+  leaseExpiresAt DateTime?             @db.Timestamptz(3)
+  createdAt      DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime              @updatedAt @db.Timestamptz(3)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id])
+  bot          Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([tenantId, createdAt])
+  @@index([conversationId])
+  @@index([botId])
+  @@map("bot_webhook_calls")
 }
 
 // ---------------------------------------------------------------------------

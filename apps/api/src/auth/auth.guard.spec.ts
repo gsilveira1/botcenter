@@ -33,18 +33,27 @@ function context(handler: keyof Routes, request: Record<string, unknown>) {
   return { ctx, reply };
 }
 
-function build(options: { scopes?: string[]; rateLimit?: () => Promise<unknown> } = {}) {
+function build(
+  options: {
+    scopes?: string[];
+    rateLimit?: () => Promise<unknown>;
+    authenticate?: () => Promise<unknown>;
+  } = {},
+) {
   const authenticator = {
-    authenticate: vi.fn(async () => ({
-      context: {
-        tenantId: 't',
-        keyId: 'k',
-        keyPrefix: 'p',
-        scopes: options.scopes ?? ['messages:send'],
-        instanceIds: [],
-      },
-      rateLimitPerMinute: 10,
-    })),
+    authenticate: vi.fn(
+      options.authenticate ??
+        (async () => ({
+          context: {
+            tenantId: 't',
+            keyId: 'k',
+            keyPrefix: 'p',
+            scopes: options.scopes ?? ['messages:send'],
+            instanceIds: [],
+          },
+          rateLimitPerMinute: 10,
+        })),
+    ),
   };
   const rateLimits = {
     consumeKey: vi.fn(
@@ -53,6 +62,9 @@ function build(options: { scopes?: string[]; rateLimit?: () => Promise<unknown> 
           headers: { 'RateLimit-Limit': '10', 'RateLimit-Remaining': '9', 'RateLimit-Reset': '30' },
         })),
     ),
+    assertAuthFailuresBelowLimit: vi.fn(async () => undefined),
+    recordAuthFailure: vi.fn(async () => undefined),
+    consumeConnect: vi.fn(async () => undefined),
   };
   const registry = new ConnectTokenVerifierRegistry();
   const metrics = new MetricsService(env);
@@ -117,6 +129,25 @@ describe('AuthGuard', () => {
     });
   });
 
+  it('checks the failure limit of the address first and counts a 401 as a failure (SEC-10)', async () => {
+    const { guard, rateLimits } = build({
+      authenticate: async () => Promise.reject(new AppError('UNAUTHENTICATED', 'x')),
+    });
+    await expect(guard.canActivate(context('send', privateRequest()).ctx)).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+    expect(rateLimits.assertAuthFailuresBelowLimit).toHaveBeenCalledWith('10.0.0.2');
+    expect(rateLimits.recordAuthFailure).toHaveBeenCalledWith('10.0.0.2');
+
+    const forbidden = build({
+      authenticate: async () => Promise.reject(new AppError('FORBIDDEN', 'x')),
+    });
+    await expect(
+      forbidden.guard.canActivate(context('send', privateRequest()).ctx),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(forbidden.rateLimits.recordAuthFailure).not.toHaveBeenCalled();
+  });
+
   it('internal route: needs a private address and the shared secret, and counts each refusal', async () => {
     const { guard, metrics } = build();
     const secret = { 'x-botcenter-webhook-secret': env.EVOLUTION_WEBHOOK_SECRET };
@@ -152,10 +183,11 @@ describe('AuthGuard', () => {
   });
 
   it('connect token route: refuses without a verifier, uses the registered verifier', async () => {
-    const { guard, registry } = build();
+    const { guard, registry, rateLimits } = build();
     await expect(guard.canActivate(context('events', privateRequest()).ctx)).rejects.toMatchObject({
       code: 'CONNECT_TOKEN_INVALID',
     });
+    expect(rateLimits.consumeConnect).toHaveBeenCalledWith('10.0.0.2');
     const token = { tenantId: 't', instanceId: 'i', tokenId: 'c' };
     registry.register({ verify: async () => token });
     const request = privateRequest() as Record<string, unknown>;

@@ -139,6 +139,12 @@ export class ExternalHttpClient implements ExternalHttpPort {
       body: JSON.stringify(request.body ?? null),
       timeoutMs: request.timeoutMs,
       ...(request.headers ? { headers: request.headers } : {}),
+      ...(request.discardLargeBody !== undefined
+        ? { discardLargeBody: request.discardLargeBody }
+        : {}),
+      ...(request.maxResponseBytes !== undefined
+        ? { maxResponseBytes: request.maxResponseBytes }
+        : {}),
     });
     return { status: response.status, json: parseJson(response.body) };
   }

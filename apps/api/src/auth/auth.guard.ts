@@ -106,6 +106,7 @@ export class AuthGuard implements CanActivate {
   }
 
   private async checkConnectToken(request: FastifyRequest): Promise<void> {
+    await this.rateLimits.consumeConnect(request.ip);
     const verifier = this.connectTokens.get();
     if (!verifier) {
       this.logger.error(
@@ -119,15 +120,25 @@ export class AuthGuard implements CanActivate {
     bindLogContext({ tenant_id: token.tenantId, instance_id: token.instanceId });
   }
 
+  /** A 401 counts as one failed authentication of the client address (SEC-10). */
+  private async authenticate(request: FastifyRequest) {
+    try {
+      return await this.authenticator.authenticate(header(request, 'authorization'), request.ip);
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'UNAUTHENTICATED') {
+        await this.rateLimits.recordAuthFailure(request.ip);
+      }
+      throw error;
+    }
+  }
+
   private async checkApiKey(
     request: FastifyRequest,
     reply: FastifyReply,
     scopes: readonly string[],
   ): Promise<void> {
-    const { context, rateLimitPerMinute } = await this.authenticator.authenticate(
-      header(request, 'authorization'),
-      request.ip,
-    );
+    await this.rateLimits.assertAuthFailuresBelowLimit(request.ip);
+    const { context, rateLimitPerMinute } = await this.authenticate(request);
     request.auth = context;
     bindLogContext({ tenant_id: context.tenantId });
     const missing = scopes.filter((scope) => !context.scopes.includes(scope as never));

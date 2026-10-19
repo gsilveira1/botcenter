@@ -18,6 +18,7 @@ export type PurgeTable =
   | 'outbox_events'
   | 'messages'
   | 'webhook_deliveries'
+  | 'bot_webhook_calls'
   | 'media_objects';
 
 /**

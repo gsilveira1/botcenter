@@ -24,6 +24,7 @@ describe('OpenAPI entries of the conversations slice', () => {
 
     expect(Object.keys(doc['paths']).sort()).toEqual([
       '/v1/bots/{id}',
+      '/v1/bots/{id}/rotate-secret',
       '/v1/conversations/{id}',
       '/v1/conversations/{id}/handoff',
     ]);

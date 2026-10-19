@@ -59,6 +59,13 @@ describe('BotResponse', () => {
     expect(BotResponse.safeParse(valid).success).toBe(true);
   });
 
+  it('accepts the signing secret of a create or a rotation, and refuses another format', () => {
+    expect(
+      BotResponse.safeParse({ ...valid, signing_secret: `whsec_${'a'.repeat(43)}` }).success,
+    ).toBe(true);
+    expect(BotResponse.safeParse({ ...valid, signing_secret: 'secret' }).success).toBe(false);
+  });
+
   it('refuses version 0', () => {
     expect(BotResponse.safeParse({ ...valid, version: 0 }).success).toBe(false);
   });

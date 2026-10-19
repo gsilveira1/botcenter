@@ -8,8 +8,6 @@ import type { Lock } from '../../services/lock.service';
 import { conversationLockName } from '../conversation-keys';
 import { ConversationMetrics } from '../conversation-metrics';
 import type { StoredInboundContent } from '../inbound-content';
-import { BotHttpService } from './bot-http';
-import type { BotWebhookCall } from './bot-http';
 import { ConversationStepService } from './conversation-step.service';
 import type { PendingMessage } from './conversation-step.service';
 import { InstanceResolver } from './instance-context';
@@ -45,27 +43,26 @@ export class ConversationRuntime {
     private readonly locks: DistributedLockService,
     private readonly steps: ConversationStepService,
     private readonly instances: InstanceResolver,
-    private readonly http: BotHttpService,
     private readonly metrics: ConversationMetrics,
   ) {}
 
-  /** Processes the pending inbound messages of one conversation, then runs its `call_webhook` actions. */
+  /**
+   * Processes the pending inbound messages of one conversation. Each step writes its `call_webhook`
+   * actions as rows in its own transaction (ARCH-04), so a later failure does not lose them.
+   */
   async drain(instance: InstanceContext, contact: string): Promise<void> {
-    const calls = await this.withLock(instance.instanceId, contact, async (lock) => {
-      const collected: BotWebhookCall[] = [];
+    await this.withLock(instance.instanceId, contact, async (lock) => {
       for (let round = 0; round < DRAIN_ROUNDS; round += 1) {
         const pending = await this.pending(instance, contact);
         for (const message of pending) {
-          collected.push(...(await this.steps.applyMessage(instance, message)));
+          await this.steps.applyMessage(instance, message);
           await this.extend(lock);
         }
         if (pending.length < DRAIN_BATCH) {
           break;
         }
       }
-      return collected;
     });
-    await this.http.callWebhooks(calls);
   }
 
   /** A state timer job. A stale timer (the conversation moved, or it is in handoff) is a no-op. */
@@ -80,10 +77,9 @@ export class ConversationRuntime {
       this.metrics.timers.inc({ result: 'stale' });
       return;
     }
-    const calls = await this.withLock(instance.instanceId, conversation.contact, () =>
+    await this.withLock(instance.instanceId, conversation.contact, () =>
       this.steps.applyTimer(instance, conversation.contact, job),
     );
-    await this.http.callWebhooks(calls);
   }
 
   private async pending(instance: InstanceContext, contact: string): Promise<PendingMessage[]> {

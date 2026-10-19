@@ -31,7 +31,7 @@ describe('generateWebhookSecret', () => {
 describe('buildSignedRequest', () => {
   it('signs timestamp.body so that the contracts verifyWebhook accepts it', () => {
     const secret = generateWebhookSecret();
-    const request = buildSignedRequest(ENVELOPE, [secret], 1_760_000_000);
+    const request = buildSignedRequest(ENVELOPE.id, ENVELOPE, [secret], 1_760_000_000);
     expect(JSON.parse(request.body)).toEqual(ENVELOPE);
     expect(request.headers).toMatchObject({
       'Webhook-Id': ENVELOPE.id,
@@ -49,7 +49,7 @@ describe('buildSignedRequest', () => {
 
   it('refuses a changed body and a wrong secret', () => {
     const secret = generateWebhookSecret();
-    const request = buildSignedRequest(ENVELOPE, [secret], 1_760_000_000);
+    const request = buildSignedRequest(ENVELOPE.id, ENVELOPE, [secret], 1_760_000_000);
     const base = {
       signature: request.headers['Webhook-Signature'],
       timestamp: request.headers['Webhook-Timestamp'],
@@ -64,7 +64,7 @@ describe('buildSignedRequest', () => {
   it('signs with both secrets during a rotation, so each secret verifies', () => {
     const current = generateWebhookSecret();
     const previous = generateWebhookSecret();
-    const request = buildSignedRequest(ENVELOPE, [current, previous], 1_760_000_000);
+    const request = buildSignedRequest(ENVELOPE.id, ENVELOPE, [current, previous], 1_760_000_000);
     expect(request.headers['Webhook-Signature']?.split(' ')).toHaveLength(2);
     for (const secret of [current, previous]) {
       expect(

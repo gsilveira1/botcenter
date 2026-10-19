@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { BatchPurger } from './batch-purger';
+import { ConversationPurgeTask } from './conversation-purge.task';
 import { IncidentService } from './incident.service';
 import { MaintenanceTaskRegistry } from './maintenance-task.registry';
 import { MaintenanceWorker } from './maintenance.worker';
@@ -22,6 +23,7 @@ import { PurgeTasks } from './purge.tasks';
     IncidentService,
     PurgeTasks,
     MediaPurgeTask,
+    ConversationPurgeTask,
     OperationalAlertsTask,
   ],
   exports: [MaintenanceTaskRegistry, IncidentService],

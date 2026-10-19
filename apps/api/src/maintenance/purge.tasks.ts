@@ -84,6 +84,10 @@ export class PurgeTasks implements OnModuleInit {
       this.perTenant('purge-webhook-deliveries', 'webhook_deliveries', (tenant) =>
         Math.min(WEBHOOK_DELIVERY_RETENTION_DAYS, tenant.retentionDays),
       ),
+      // The bot calls hold the conversation context (personal data): the same rule as the deliveries.
+      this.perTenant('purge-bot-webhook-calls', 'bot_webhook_calls', (tenant) =>
+        Math.min(WEBHOOK_DELIVERY_RETENTION_DAYS, tenant.retentionDays),
+      ),
     ];
   }
 

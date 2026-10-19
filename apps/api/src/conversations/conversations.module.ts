@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BotsApiModule } from '../bots/bots.module';
 import { MediaModule } from '../media/media.module';
+import { BotWebhookCallsModule } from '../webhooks/webhooks.module';
 import { BotDefinitionsService } from './bot-definitions.service';
 import { ConversationCacheService } from './conversation-cache.service';
 import { ConversationMetrics } from './conversation-metrics';
@@ -44,10 +45,11 @@ export class ConversationsApiModule {}
 /**
  * Worker process: the `message.received` inbound handler and the `timers` consumer. It injects the
  * frozen ports `OUTBOUND_MESSAGES` (global `MessagesCoreModule`) and `EXTERNAL_HTTP` (webhooks slice,
- * which must export it globally). The inbound media go through `MediaStorage` of `MediaModule`.
+ * which must export it globally). The inbound media go through `MediaStorage` of `MediaModule`. The
+ * `call_webhook` rows and the bot request signature come from `BotWebhookCallsModule` (webhooks slice).
  */
 @Module({
-  imports: [MediaModule],
+  imports: [MediaModule, BotWebhookCallsModule],
   providers: [
     ...SHARED,
     InstanceResolver,
