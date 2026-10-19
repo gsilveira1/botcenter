@@ -18,8 +18,11 @@ import type { InstanceContext } from './instance-context';
 /** The lock of a conversation is short. A step extends it after each message. */
 export const CONVERSATION_LOCK = {
   ttlMs: 30_000,
-  /** The job waits this long for a busy lock, then runs again after `retryDelayMs`. */
-  waitMs: 2_000,
+  /**
+   * The job waits this long for a busy lock, then runs again after `retryDelayMs` (ARCH-16: a short wait,
+   * because the holder drains every pending row of the conversation, also the row of the waiting job).
+   */
+  waitMs: 200,
   retryDelayMs: 1_000,
 } as const;
 /** The pending rows that one drain reads at a time, and the maximum number of reads. */
