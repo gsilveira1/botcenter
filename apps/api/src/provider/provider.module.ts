@@ -1,6 +1,5 @@
-import { Global, Module } from '@nestjs/common';
-import type { OnApplicationBootstrap } from '@nestjs/common';
-import { Inject, Injectable } from '@nestjs/common';
+import { Global, Inject, Injectable, Module } from '@nestjs/common';
+import type { OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { ENV } from '../config/env';
 import type { AppEnv } from '../config/env';
 import { getLogger } from '../logging/logger';
@@ -12,18 +11,34 @@ import {
 } from './provider.tokens';
 import type { ProviderBindings } from './provider.tokens';
 
+/**
+ * Writes the provider name at start and closes the provider at shutdown. Nest runs
+ * `onApplicationShutdown` after the HTTP server and the queue workers stop, so no call is in progress.
+ */
 @Injectable()
-class ProviderStartupLog implements OnApplicationBootstrap {
+class ProviderLifecycle implements OnApplicationBootstrap, OnApplicationShutdown {
+  private readonly logger = getLogger('provider');
+
   constructor(@Inject(PROVIDER_BINDINGS) private readonly bindings: ProviderBindings) {}
 
   onApplicationBootstrap(): void {
-    const logger = getLogger('provider');
-    if (this.bindings.provider.name === 'unconfigured') {
-      logger.warn(
-        'no WhatsApp provider is wired: provider calls fail and /health/ready reports it',
+    this.logger.info({ provider: this.bindings.provider.name }, 'WhatsApp provider wired');
+  }
+
+  async onApplicationShutdown(): Promise<void> {
+    if (!this.bindings.close) {
+      return;
+    }
+    try {
+      await this.bindings.close();
+      this.logger.info({ provider: this.bindings.provider.name }, 'WhatsApp provider closed');
+    } catch (error) {
+      // The process stops after this hook, so an open socket has no effect on the operation. The other
+      // shutdown hooks (Redis, PostgreSQL) must still run, so the error does not stop the shutdown.
+      this.logger.error(
+        { err: error, provider: this.bindings.provider.name },
+        'WhatsApp provider not closed',
       );
-    } else {
-      logger.info({ provider: this.bindings.provider.name }, 'WhatsApp provider wired');
     }
   }
 }
@@ -31,6 +46,7 @@ class ProviderStartupLog implements OnApplicationBootstrap {
 /**
  * Gives `WHATSAPP_PROVIDER` and `PROVIDER_WEBHOOK_NORMALIZER` to every module. The pair comes from
  * `providerFactory` (`provider.factory.ts`). Tests replace `PROVIDER_BINDINGS` with a fake pair.
+ * At shutdown, the module calls `ProviderBindings.close()`.
  */
 @Global()
 @Module({
@@ -50,7 +66,7 @@ class ProviderStartupLog implements OnApplicationBootstrap {
       inject: [PROVIDER_BINDINGS],
       useFactory: (bindings: ProviderBindings) => bindings.normalizer,
     },
-    ProviderStartupLog,
+    ProviderLifecycle,
   ],
   exports: [WHATSAPP_PROVIDER, PROVIDER_WEBHOOK_NORMALIZER],
 })

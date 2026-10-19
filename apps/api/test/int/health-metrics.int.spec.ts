@@ -30,17 +30,13 @@ describe('health', () => {
   });
 
   it('GET /health/ready answers 503 when the provider does not answer', async () => {
-    h.provider.pingError = new ProviderError('unavailable', 'down');
-    try {
-      const response = await h.inject({ method: 'GET', url: '/health/ready' });
-      expect(response.statusCode).toBe(503);
-      expect(response.json()).toMatchObject({
-        status: 'unavailable',
-        checks: { database: { status: 'up' }, provider: { status: 'down', error: 'unavailable' } },
-      });
-    } finally {
-      h.provider.pingError = undefined;
-    }
+    h.provider.failNext('ping', new ProviderError('unavailable', 'down'));
+    const response = await h.inject({ method: 'GET', url: '/health/ready' });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({
+      status: 'unavailable',
+      checks: { database: { status: 'up' }, provider: { status: 'down', error: 'unavailable' } },
+    });
   });
 });
 

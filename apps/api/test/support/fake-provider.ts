@@ -1,141 +1,89 @@
-import { ProviderError } from '@botcenter/whatsapp-provider';
-import type {
-  ConnectInput,
-  ConnectResult,
-  CreateInstanceInput,
-  DownloadedMedia,
-  ProviderConnectionState,
-  ProviderEvent,
-  ProviderWebhookNormalizer,
-  SendMessageInput,
-  SendMessageResult,
-  WhatsAppProvider,
-} from '@botcenter/whatsapp-provider';
-
-export interface ProviderCall {
-  method: keyof WhatsAppProvider;
-  args: unknown[];
-}
+import { randomUUID } from 'node:crypto';
+import { EvolutionWebhookNormalizer } from '@botcenter/whatsapp-provider';
+import {
+  newMessageId,
+  updateData,
+  upsertData,
+  webhookEnvelope,
+} from '@botcenter/whatsapp-provider/testing';
+import type { EvolutionAckStatus } from '@botcenter/whatsapp-provider/testing';
 
 /**
- * An in-memory `WhatsAppProvider` for tests. It records each call. Set `failNext` or `pingError` to
- * simulate provider errors.
+ * The provider fakes of the integration tests. The harness binds `FakeWhatsAppProvider` (in memory) and
+ * the real `EvolutionWebhookNormalizer`, so a test posts real Evolution v2.3.7 webhook bodies to
+ * `POST /internal/evolution/webhook`. The builders below make these bodies.
  */
-export class FakeWhatsAppProvider implements WhatsAppProvider {
-  readonly name = 'fake';
-  readonly calls: ProviderCall[] = [];
-  readonly states = new Map<string, ProviderConnectionState>();
-  /** The next call (except `ping`) throws this error once. */
-  failNext: ProviderError | undefined;
-  /** `ping()` throws this error while it is set. */
-  pingError: ProviderError | undefined;
-  private sequence = 0;
+export { FakeEvolutionServer, FakeWhatsAppProvider } from '@botcenter/whatsapp-provider/testing';
 
-  private record(method: keyof WhatsAppProvider, ...args: unknown[]): void {
-    this.calls.push({ method, args });
-    const failure = this.failNext;
-    if (failure) {
-      this.failNext = undefined;
-      throw failure;
-    }
-  }
+const ENVELOPE = {
+  destination: 'http://api.test:3000/internal/evolution/webhook',
+  serverUrl: 'http://evolution.test:8080',
+};
 
-  async createInstance(input: CreateInstanceInput): Promise<void> {
-    this.record('createInstance', input);
-    this.states.set(input.name, 'disconnected');
-  }
+/** The Evolution instance id (`instanceId` in `data`). The Bot Center does not read it. */
+const EVOLUTION_INSTANCE_ID = randomUUID();
 
-  async connect(name: string, input: ConnectInput): Promise<ConnectResult> {
-    this.record('connect', name, input);
-    this.states.set(name, 'connecting');
-    return input.method === 'pairing_code'
-      ? { pairingCode: 'ABCD1234', alreadyConnected: false }
-      : {
-          qrcode: `qr-${name}`,
-          qrcodeBase64: 'data:image/png;base64,AAAA',
-          alreadyConnected: false,
-        };
-  }
+const normalizer = new EvolutionWebhookNormalizer();
 
-  async getConnectionState(name: string): Promise<ProviderConnectionState> {
-    this.record('getConnectionState', name);
-    return this.states.get(name) ?? 'disconnected';
-  }
-
-  async logout(name: string): Promise<void> {
-    this.record('logout', name);
-    this.states.set(name, 'logged_out');
-  }
-
-  async deleteInstance(name: string): Promise<void> {
-    this.record('deleteInstance', name);
-    this.states.delete(name);
-  }
-
-  async sendMessage(name: string, input: SendMessageInput): Promise<SendMessageResult> {
-    this.record('sendMessage', name, input);
-    this.sequence += 1;
-    return { providerMessageId: `fake-msg-${this.sequence}` };
-  }
-
-  async downloadMedia(name: string, providerMessageId: string): Promise<DownloadedMedia> {
-    this.record('downloadMedia', name, providerMessageId);
-    return { data: Buffer.from('fake-media'), mimeType: 'image/jpeg', fileName: 'fake.jpg' };
-  }
-
-  async ping(): Promise<void> {
-    if (this.pingError) {
-      throw this.pingError;
-    }
-  }
+/** An Evolution webhook body and the dedupe key that the normalizer gives to its event. */
+export interface EvolutionWebhook {
+  body: Record<string, unknown>;
+  /** `ProviderEvent.dedupeKey` of the event. `inboundJobId(dedupeKey)` is the id of its inbound job. */
+  dedupeKey: string;
 }
 
-/** A provider event in the body of the fake webhook: `occurredAt` is an ISO string. */
-export type FakeWebhookEvent = {
-  [K in ProviderEvent['kind']]: Omit<Extract<ProviderEvent, { kind: K }>, 'occurredAt'> & {
-    occurredAt: string;
-  };
-}[ProviderEvent['kind']];
-
-type FakeMessageReceived = Extract<FakeWebhookEvent, { kind: 'message.received' }>;
-
-/** Body format of the fake normalizer: `{ "events": [...], "ignored": 0 }`. */
-export interface FakeWebhookBody {
-  events: FakeWebhookEvent[];
-  ignored?: number;
-}
-
-/**
- * A normalizer for tests: the body already contains the normalized events. A body without an `events`
- * array is rejected (`ProviderError('rejected')`), like an unknown Evolution payload.
- */
-export class FakeWebhookNormalizer implements ProviderWebhookNormalizer {
-  normalize(body: unknown): { events: ProviderEvent[]; ignored: number } {
-    const candidate = body as Partial<FakeWebhookBody> | null;
-    if (!candidate || !Array.isArray(candidate.events)) {
-      throw new ProviderError('rejected', 'Unknown webhook body');
-    }
-    return {
-      events: candidate.events.map(
-        (event) => ({ ...event, occurredAt: new Date(event.occurredAt) }) as ProviderEvent,
-      ),
-      ignored: candidate.ignored ?? 0,
-    };
+function withDedupeKey(body: Record<string, unknown>): EvolutionWebhook {
+  const [event] = normalizer.normalize(body).events;
+  if (!event) {
+    throw new Error('The Evolution normalizer ignored the test webhook body');
   }
+  return { body, dedupeKey: event.dedupeKey };
 }
 
-/** A `message.received` event for the fake webhook body. */
-export function fakeMessageReceived(
-  overrides: Partial<FakeMessageReceived> & { instanceName: string },
-): FakeMessageReceived {
-  const id = overrides.dedupeKey ?? `msg-${Math.random().toString(36).slice(2)}`;
+export interface InboundTextInput {
+  /** The `providerName` of the instance (`inst_<uuid>`). */
+  instanceName: string;
+  text?: string;
+  /** The phone of the contact (E.164 digits). */
+  from?: string;
+  /** The WhatsApp message id. A second body with the same id is a duplicate. */
+  id?: string;
+  timestamp?: Date;
+}
+
+/** A `messages.upsert` webhook with a text message from a contact (`message.received`, type `text`). */
+export function evolutionInboundText(
+  input: InboundTextInput,
+): EvolutionWebhook & { messageId: string } {
+  const messageId = input.id ?? newMessageId();
+  const data = upsertData({ conversation: input.text ?? 'Oi' }, 'conversation', {
+    from: input.from ?? '5511987654321',
+    id: messageId,
+    instanceId: EVOLUTION_INSTANCE_ID,
+    ...(input.timestamp ? { timestamp: input.timestamp } : {}),
+  });
   return {
-    kind: 'message.received',
-    dedupeKey: id,
-    occurredAt: new Date().toISOString(),
-    providerMessageId: id,
-    from: '5511987654321',
-    content: { type: 'text', text: 'hello' },
-    ...overrides,
+    ...withDedupeKey(webhookEnvelope('messages.upsert', input.instanceName, data, ENVELOPE)),
+    messageId,
   };
+}
+
+export interface StatusInput {
+  instanceName: string;
+  /** The `providerMessageId` of a message that the instance sent. */
+  messageId: string;
+  status: EvolutionAckStatus;
+  /** The phone of the recipient. */
+  to?: string;
+}
+
+/** A `messages.update` webhook for a sent message (`message.status`). `DELIVERY_ACK` is `delivered`. */
+export function evolutionStatus(input: StatusInput): EvolutionWebhook {
+  const data = updateData(
+    input.messageId,
+    input.to ?? '5511987654321',
+    input.status,
+    EVOLUTION_INSTANCE_ID,
+  );
+  return withDedupeKey(webhookEnvelope('messages.update', input.instanceName, data, ENVELOPE));
 }

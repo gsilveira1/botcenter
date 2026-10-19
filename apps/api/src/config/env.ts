@@ -1,3 +1,4 @@
+import { DEFAULT_TIMEOUTS } from '@botcenter/whatsapp-provider';
 import { z } from 'zod';
 
 /**
@@ -13,6 +14,9 @@ const booleanString = z
   .transform((value) => value === 'true' || value === '1');
 
 const positiveInt = z.coerce.number().int().positive();
+
+/** A time limit of an Evolution request: from 1 ms to 5 minutes. */
+const evolutionTimeout = (fallback: number) => positiveInt.max(300_000).default(fallback);
 
 /** A base64 text that decodes to exactly 32 bytes (an AES-256 key). */
 const key32Base64 = z
@@ -53,6 +57,19 @@ export const EnvSchema = z.object({
   EVOLUTION_WEBHOOK_SECRET: z.string().min(32, 'Must have at least 32 characters'),
   /** Base URL of this API on the internal network, for the provider webhook (`http://api:3000`). */
   INTERNAL_WEBHOOK_BASE_URL: httpUrl,
+  /**
+   * How the Evolution adapter sends `buttons` and `list` content. `text` (default) sends a numbered text
+   * menu. `native` sends the native messages, which many WhatsApp clients do not show (provider README).
+   */
+  EVOLUTION_INTERACTIVE_FALLBACK: z.enum(['text', 'native']).default('text'),
+  /** Time limit of a state, create, logout, delete, or ping request (also the readiness ping). */
+  EVOLUTION_REQUEST_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.requestMs),
+  /** Time limit of `connect` (Evolution waits about 2 s for the first QR code). */
+  EVOLUTION_CONNECT_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.connectMs),
+  /** Time limit of one send. The adapter adds the typing delay to it. */
+  EVOLUTION_SEND_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.sendMs),
+  /** Time limit of one media download. */
+  EVOLUTION_MEDIA_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.mediaMs),
 
   S3_ENDPOINT: httpUrl,
   S3_REGION: z.string().min(1).default('auto'),
