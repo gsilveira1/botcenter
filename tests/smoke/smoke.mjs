@@ -18,6 +18,8 @@ const client = createClient({
   httpPort: Number(required('SMOKE_HTTP_PORT')),
   domain: required('SMOKE_DOMAIN'),
   caFile: required('SMOKE_CA_FILE'),
+  clientCertFile: required('SMOKE_CLIENT_CERT'),
+  clientKeyFile: required('SMOKE_CLIENT_KEY'),
 });
 const RUN = randomBytes(3).toString('hex');
 const BOT_ID = `smoke-onboarding-${RUN}`;

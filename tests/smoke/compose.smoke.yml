@@ -8,12 +8,18 @@
 #     443, and 3001. TLS uses `tls internal` (CADDY_TLS=internal): the local CA of Caddy.
 #   - MinIO replaces Cloudflare R2 (the S3 variables of the API are required).
 #   - `receiver` is a local HTTPS server (Caddy, `tls internal`) for the webhook step.
+#   - Caddy trusts a local CA in place of the Cloudflare origin pull CA (SEC-14); smoke.mjs sends a
+#     client certificate of that CA, as Cloudflare does.
+#   - The networks keep the fixed subnets of production (10.203.0.0/16, SEC-01): run one smoke stack at a
+#     time, and not on a host that runs the production stack.
 # The services `alloy` and `uptime-kuma` do not start (they need Grafana Cloud and a UI).
 services:
   caddy:
     ports: !override
       - '127.0.0.1:${SMOKE_HTTP_PORT:?}:80'
       - '127.0.0.1:${SMOKE_HTTPS_PORT:?}:443'
+    volumes:
+      - ${SMOKE_ORIGIN_PULL_CA:?}:/etc/caddy/cloudflare-origin-pull-ca.pem:ro
 
   minio:
     image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
@@ -84,6 +90,8 @@ networks:
     name: ${SMOKE_PROJECT:?}-internal
   egress:
     name: ${SMOKE_PROJECT:?}-egress
+  metrics:
+    name: ${SMOKE_PROJECT:?}-metrics
 
 volumes:
   postgres-data:
