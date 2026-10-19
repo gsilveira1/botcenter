@@ -11,6 +11,7 @@
 #   botcenter_messages_total{status}            counter: outbound messages per status
 #   botcenter_instance_messages_total{instance_id,status}  counter: sends of each instance (sent, failed)
 #   botcenter_webhook_deliveries_total{result}  counter: webhook delivery attempts (succeeded, failed, dead)
+#   botcenter_bot_webhook_calls_total{result}   counter: call_webhook actions of the bots (same values)
 #   botcenter_rate_limit_denied_total{scope}    counter: denied requests (key, instance)
 #   http_request_duration_seconds               histogram: API latency (method, route, status_code)
 # Metrics of the host: node exporter of Alloy, and the text files of infra/backup (backup, restore test,
@@ -131,6 +132,23 @@ groups:
         annotations:
           summary: '{{ $value | humanizePercentage }} of the webhook deliveries failed in 15 minutes on {{ $labels.host }}'
           description: 'A client endpoint does not answer 2xx. The deliveries retry (1 min to 6 h). Tell the owner of the endpoint.'
+
+      # The `call_webhook` actions of the bots (bugfix/webhooks-authz): the same result values.
+      - alert: BotWebhookCallFailuresHigh
+        expr: |
+          (
+            sum by (host) (increase(botcenter_bot_webhook_calls_total{result=~"failed|dead"}[15m]))
+            /
+            sum by (host) (increase(botcenter_bot_webhook_calls_total[15m]))
+          ) > 0.2
+          and
+          sum by (host) (increase(botcenter_bot_webhook_calls_total[15m])) >= 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $value | humanizePercentage }} of the bot webhook calls failed in 15 minutes on {{ $labels.host }}'
+          description: 'An endpoint of a `call_webhook` action does not answer 2xx. The calls retry. Tell the owner of the bot.'
 
       - alert: WebhookDeadLetters
         expr: sum by (host) (increase(botcenter_webhook_deliveries_total{result="dead"}[30m])) > 0

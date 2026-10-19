@@ -481,6 +481,7 @@ The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard 
 | `botcenter_messages_total` | counter | `status` |
 | `botcenter_instance_messages_total` | counter | `instance_id`, `status` (`sent`, `failed`) |
 | `botcenter_webhook_deliveries_total` | counter | `result` (`succeeded`, `failed`, `dead`) |
+| `botcenter_bot_webhook_calls_total` | counter | `result` (`succeeded`, `failed`: a retry follows, `dead`) |
 | `botcenter_rate_limit_denied_total` | counter | `scope` (`key`, `instance`) |
 | `botcenter_worker_ready` | gauge | none (worker process: 1 when PostgreSQL and Redis answer) |
 | `http_request_duration_seconds` | histogram | `method`, `route`, `status_code` |

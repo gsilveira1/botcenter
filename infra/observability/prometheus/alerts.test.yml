@@ -247,3 +247,26 @@ tests:
             exp_annotations:
               summary: 'The worker process on h1 cannot reach PostgreSQL or Redis'
               description: 'No job runs. Runbook: "Incident: worker not ready".'
+
+  # The `call_webhook` actions of the bots use the same result values as the deliveries.
+  - name: bot webhook calls that succeed do not fire, failed and dead calls above 20 % fire
+    interval: 1m
+    input_series:
+      - series: 'botcenter_bot_webhook_calls_total{result="succeeded", host="h1", role="worker"}'
+        values: '0+20x30'
+      - series: 'botcenter_bot_webhook_calls_total{result="succeeded", host="h2", role="worker"}'
+        values: '0+6x30'
+      - series: 'botcenter_bot_webhook_calls_total{result="failed", host="h2", role="worker"}'
+        values: '0+3x30'
+      - series: 'botcenter_bot_webhook_calls_total{result="dead", host="h2", role="worker"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: BotWebhookCallFailuresHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: h2
+            exp_annotations:
+              summary: '40% of the bot webhook calls failed in 15 minutes on h2'
+              description: 'An endpoint of a `call_webhook` action does not answer 2xx. The calls retry. Tell the owner of the bot.'
