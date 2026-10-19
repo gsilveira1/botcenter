@@ -4,9 +4,12 @@ import type {
   CreateMediaUploadRequest,
   CreateMediaUploadResponse,
   MediaContent,
+  MediaUrlResponse,
 } from '@botcenter/contracts';
 import type { OutboundMediaContent } from '@botcenter/whatsapp-provider';
-import { AppError, validationError } from '../common/errors/app-error';
+import { allowsAllInstances } from '../auth/auth-context';
+import type { AuthContext } from '../auth/auth-context';
+import { AppError, notFound, validationError } from '../common/errors/app-error';
 import { ENV } from '../config/env';
 import type { AppEnv } from '../config/env';
 import { SsrfGuard } from '../external-http/ssrf-guard';
@@ -171,6 +174,56 @@ export class MediaService {
       mime_type: media.contentType,
       ...(fileName ? { file_name: fileName } : {}),
     };
+  }
+
+  /**
+   * `GET /v1/media/{id}`: a fresh signed GET URL (`MEDIA_READ_URL_TTL_SECONDS`) of a live file of the
+   * tenant. An unknown, expired, or other-tenant file is 404. For a key with an instance list, an inbound
+   * file must belong to a message of one of its instances (else 404). An outbound file belongs to the
+   * tenant (an upload has no instance).
+   */
+  async readUrl(auth: AuthContext, mediaId: string, now = new Date()): Promise<MediaUrlResponse> {
+    const db = this.prisma.forTenant(auth.tenantId);
+    const media = await db.mediaObject.findFirst({
+      where: { id: mediaId, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      select: { ...MEDIA_SELECT, direction: true, createdAt: true },
+    });
+    if (!media || !(await this.visibleTo(auth, media))) {
+      throw notFound('Media');
+    }
+    const ttlSeconds = this.env.MEDIA_READ_URL_TTL_SECONDS;
+    return {
+      media_id: media.id,
+      direction: media.direction,
+      mime_type: media.contentType,
+      size_bytes: media.sizeBytes,
+      file_name: media.fileName,
+      url: await this.storage.downloadUrl(media.key, ttlSeconds),
+      expires_at: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
+    };
+  }
+
+  /** The inbound message of the file is written before the file (at most one day before). */
+  private async visibleTo(
+    auth: AuthContext,
+    media: { id: string; direction: 'inbound' | 'outbound'; createdAt: Date },
+  ): Promise<boolean> {
+    if (allowsAllInstances(auth) || media.direction === 'outbound') {
+      return true;
+    }
+    const message = await this.prisma.forTenant(auth.tenantId).message.findFirst({
+      where: {
+        direction: 'inbound',
+        instanceId: { in: auth.instanceIds },
+        createdAt: {
+          gte: new Date(media.createdAt.getTime() - DAY_MS),
+          lte: new Date(media.createdAt.getTime() + 60_000),
+        },
+        content: { path: ['media_id'], equals: media.id },
+      },
+      select: { id: true },
+    });
+    return message !== null;
   }
 
   /**

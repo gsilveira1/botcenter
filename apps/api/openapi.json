@@ -1310,7 +1310,7 @@
           "media"
         ],
         "summary": "Get a pre-signed upload URL for a media file",
-        "description": "Send the bytes with `PUT upload_url`, the same `Content-Type`, and exactly `size_bytes` bytes before `expires_at`. Then use `media_id` in `POST /v1/messages`. The bucket is private. Accepted types (image: image/jpeg, image/png, image/webp; video: video/mp4, video/3gpp; audio: audio/aac, audio/mp4, audio/mpeg, audio/amr, audio/ogg; document: application/pdf, text/plain, text/csv, application/zip, application/msword, application/vnd.ms-excel, application/vnd.ms-powerpoint, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.openxmlformats-officedocument.presentationml.presentation). A `document` message accepts every type of the list.",
+        "description": "Send the bytes with `PUT upload_url`, the same `Content-Type`, and exactly `size_bytes` bytes before `expires_at` (5 minutes). Then use `media_id` in `POST /v1/messages`. The bucket is private. A tenant has at most `MEDIA_UPLOADS_PER_DAY` uploads for each UTC day and `MEDIA_MAX_BYTES_PER_TENANT` bytes of live files; above them, 429 `QUOTA_EXCEEDED`. Accepted types (image: image/jpeg, image/png, image/webp; video: video/mp4, video/3gpp; audio: audio/aac, audio/mp4, audio/mpeg, audio/amr, audio/ogg; document: application/pdf, text/plain, text/csv, application/zip, application/msword, application/vnd.ms-excel, application/vnd.ms-powerpoint, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.openxmlformats-officedocument.presentationml.presentation). A `document` message accepts every type of the list.",
         "security": [
           {
             "apiKey": []
@@ -1433,6 +1433,115 @@
         }
       }
     },
+    "/v1/media/{id}": {
+      "get": {
+        "operationId": "Media_read",
+        "tags": [
+          "media"
+        ],
+        "summary": "Get a fresh download URL of a media file",
+        "description": "The `url` of an inbound file in a `message.received` event expires after 1 hour. This route gives a new signed URL (15 minutes) of a file of the tenant while the file is kept (`retentionDays`). A key with an instance list reads only the inbound files of its instances. An unknown or expired file is 404.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "x-required-scopes": [
+          "events:read"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Download URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaUrlResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid (`VALIDATION_FAILED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key (`UNAUTHENTICATED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or instance not allowed (`SCOPE_MISSING`, `INSTANCE_NOT_ALLOWED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit of the API key (`RATE_LIMITED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (Problem Details)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/messages": {
       "post": {
         "operationId": "Messages_send",
@@ -1440,7 +1549,7 @@
           "messages"
         ],
         "summary": "Queue a message",
-        "description": "Queues one message and answers 202 at once. The worker sends it later; read the status with\n`GET /v1/messages/{id}` or the `message.status` webhook event.\n\n- `priority: reply` goes before `bulk` in the queue. The daily quota of the tenant\n  (`maxMessagesPerDay`, UTC day) counts every message of this route; 429 `QUOTA_EXCEEDED` has\n  `Retry-After` until 00:00 UTC.\n- The instance must belong to the tenant (else 403). An instance without a WhatsApp session\n  (`created`, `logged_out`) gives 409 `INSTANCE_NOT_CONNECTED`. A `connecting` or `disconnected`\n  instance accepts the message; the worker retries for about 12 minutes, then the status is\n  `failed` with `failure_reason: not_connected`.\n- Each instance has a send rate (token bucket). A new number sends slower during its first days\n  (warm-up). A message that waits for the rate limit stays `queued`.\n- Delivery is at least once. When a send times out, the provider can have sent the message, and\n  the retry (after 60 s or more) can send it a second time. After two such timeouts the status is\n  `failed` with `failure_reason: send_timeout`.\n- `failure_reason` values: `invalid_recipient`, `instance_not_found`, `rejected`, `not_connected`,\n  `provider_unavailable`, `send_timeout`, `instance_deleted`, `instance_not_connected`,\n  `media_not_found`, `media_not_uploaded`, `internal_error`, `provider_error`.",
+        "description": "Queues one message and answers 202 at once. The worker sends it later; read the status with\n`GET /v1/messages/{id}` or the `message.status` webhook event.\n\n- `priority: reply` goes before `bulk` in the queue. The daily quota of the tenant\n  (`maxMessagesPerDay`, UTC day) counts every message of this route; 429 `QUOTA_EXCEEDED` has\n  `Retry-After` until 00:00 UTC.\n- The instance must belong to the tenant (else 403). An instance without a WhatsApp session\n  (`created`, `logged_out`) gives 409 `INSTANCE_NOT_CONNECTED`. A `connecting` or `disconnected`\n  instance accepts the message; the worker retries for about 12 minutes, then the status is\n  `failed` with `failure_reason: not_connected`.\n- An instance has at most `OUTBOUND_MAX_QUEUED_PER_INSTANCE` (default 1000) `queued` messages.\n  Above it, the answer is 429 `QUOTA_EXCEEDED` with `Retry-After: 60`.\n- Each instance has a send rate (token bucket). A new number sends slower during its first days\n  (warm-up). A message that waits for the rate limit stays `queued`.\n- Delivery is at least once. When a send times out, the provider can have sent the message, and\n  the retry (after 60 s or more) can send it a second time. After two such timeouts the status is\n  `failed` with `failure_reason: send_timeout`.\n- A media `url` must be a public HTTPS file. A URL that resolves to a private, loopback, link-local,\n  or metadata address gives 422 `MEDIA_URL_FORBIDDEN`. The worker downloads the file (no redirects,\n  at most 16 MiB, a WhatsApp file type in `Content-Type`) into the private bucket and sends the copy.\n- `failure_reason` values: `invalid_recipient`, `instance_not_found`, `rejected`, `not_connected`,\n  `provider_unavailable`, `send_timeout`, `instance_deleted`, `instance_not_connected`,\n  `media_not_found`, `media_not_uploaded`, `media_url_forbidden`, `media_download_failed`,\n  `media_too_large`, `media_type_not_accepted`, `internal_error`, `provider_error`,\n  `instance_queue_full` (a bot reply above the queue limit), `expired` (still `queued` after\n  `OUTBOUND_QUEUED_MAX_AGE_SECONDS`, default 24 h).",
         "security": [
           {
             "apiKey": []
@@ -3042,6 +3151,58 @@
         ],
         "additionalProperties": false
       },
+      "MediaUrlResponseDto": {
+        "type": "object",
+        "properties": {
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "inbound",
+              "outbound"
+            ]
+          },
+          "mime_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 127
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "file_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          }
+        },
+        "required": [
+          "media_id",
+          "direction",
+          "mime_type",
+          "size_bytes",
+          "file_name",
+          "url",
+          "expires_at"
+        ],
+        "additionalProperties": false
+      },
       "MessageResponseDto": {
         "type": "object",
         "properties": {
@@ -3145,7 +3306,8 @@
               "BOT_DEFINITION_INVALID",
               "WEBHOOK_URL_FORBIDDEN",
               "PROVIDER_UNAVAILABLE",
-              "INTERNAL"
+              "INTERNAL",
+              "MEDIA_URL_FORBIDDEN"
             ]
           },
           "instance": {

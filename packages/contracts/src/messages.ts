@@ -239,3 +239,21 @@ export const CreateMediaUploadResponse = z.object({
   expires_at: IsoDateTime,
 });
 export type CreateMediaUploadResponse = z.infer<typeof CreateMediaUploadResponse>;
+
+// ---------------------------------------------------------------------------
+// Media read: `GET /v1/media/{id}` (additive, outbound slice). A fresh short-lived signed GET URL of a
+// media file of the tenant (an inbound file of a webhook event, or an outbound file).
+// ---------------------------------------------------------------------------
+
+export const MEDIA_DIRECTIONS = ['inbound', 'outbound'] as const;
+
+export const MediaUrlResponse = z.object({
+  media_id: Uuid,
+  direction: z.enum(MEDIA_DIRECTIONS),
+  mime_type: z.string().min(1).max(127),
+  size_bytes: z.number().int().min(0),
+  file_name: z.string().nullable(),
+  url: z.url(),
+  expires_at: IsoDateTime,
+});
+export type MediaUrlResponse = z.infer<typeof MediaUrlResponse>;

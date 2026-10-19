@@ -162,6 +162,8 @@ export const EnvSchema = z.object({
    * valid, so it is short (SEC-17).
    */
   MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(300),
+  /** Validity of the signed download URL of `GET /v1/media/{id}`. */
+  MEDIA_READ_URL_TTL_SECONDS: positiveInt.max(86_400).default(900),
   /** Maximum `POST /v1/media` calls of one tenant in one UTC day (SEC-17). */
   MEDIA_UPLOADS_PER_DAY: positiveInt.max(1_000_000).default(1_000),
   /** Maximum sum of the declared sizes of the live outbound media of one tenant (SEC-17). Default 5 GiB. */
