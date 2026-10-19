@@ -51,6 +51,7 @@ function setup(routes: Record<string, ApiFixture | ApiFixture[] | Error>) {
     apiKey: API_KEY,
     fetch,
     logger,
+    deleteRetry: { attempts: 3, delayMs: 0 },
   });
   return { provider, sent, logger };
 }
@@ -316,6 +317,31 @@ describe('EvolutionProvider.logout and deleteInstance', () => {
     });
     await provider.deleteInstance(NAME);
     await expect(provider.deleteInstance(NAME)).resolves.toBeUndefined();
+  });
+
+  // Evolution 2.3.7 answers 400 when its internal logout fails while the session changes state
+  // (`deleteInstance` wraps every error in a BadRequestException). A later call succeeds.
+  const transientDelete400 = {
+    status: 400,
+    body: {
+      status: 400,
+      error: 'Bad Request',
+      response: { message: ['Error: Connection Closed'] },
+    },
+  };
+
+  it('retries a delete after a transient 400 and succeeds', async () => {
+    const { provider, sent } = setup({
+      [`DELETE /instance/delete/${NAME}`]: [transientDelete400, apiFixture('delete.200')],
+    });
+    await expect(provider.deleteInstance(NAME)).resolves.toBeUndefined();
+    expect(sent.filter((call) => call.url.includes('/instance/delete/'))).toHaveLength(2);
+  });
+
+  it('maps a delete that answers 400 at every attempt to rejected', async () => {
+    const { provider, sent } = setup({ [`DELETE /instance/delete/${NAME}`]: transientDelete400 });
+    expect((await providerError(provider.deleteInstance(NAME))).code).toBe('rejected');
+    expect(sent.filter((call) => call.url.includes('/instance/delete/'))).toHaveLength(3);
   });
 
   it('maps a 500 on delete to unavailable', async () => {

@@ -1,3 +1,4 @@
+import { setTimeout } from 'node:timers/promises';
 import { MEDIA_MAX_BYTES } from '@botcenter/contracts';
 import type { Dispatcher } from 'undici';
 import { consoleWarnLogger, type ProviderLogger } from '../logger.js';
@@ -69,7 +70,11 @@ export interface EvolutionProviderOptions {
   interactiveFallback?: InteractiveFallback;
   /** Reject the WhatsApp calls to the connected number. Default `false`: it is the personal phone of a person. */
   rejectCalls?: boolean;
+  /** The retries of a delete that answers 400 (see `deleteInstance`). Default: 3 attempts, 1 s apart. */
+  deleteRetry?: { attempts: number; delayMs: number };
 }
+
+const DEFAULT_DELETE_RETRY = { attempts: 3, delayMs: 1_000 };
 
 /** The JSON envelope around the base64 text of a media answer (mime type, file name, size, key). */
 const MEDIA_ENVELOPE_BYTES = 64 * 1024;
@@ -135,6 +140,7 @@ export class EvolutionProvider implements WhatsAppProvider {
   private readonly logger: ProviderLogger;
   private readonly fallback: InteractiveFallback;
   private readonly rejectCalls: boolean;
+  private readonly deleteRetry: { attempts: number; delayMs: number };
 
   constructor(options: EvolutionProviderOptions) {
     if (!options.baseUrl) throw new TypeError('EvolutionProvider: "baseUrl" is required');
@@ -143,6 +149,7 @@ export class EvolutionProvider implements WhatsAppProvider {
     this.timeouts = { ...DEFAULT_TIMEOUTS, ...options.timeouts };
     this.fallback = options.interactiveFallback ?? 'text';
     this.rejectCalls = options.rejectCalls ?? false;
+    this.deleteRetry = options.deleteRetry ?? DEFAULT_DELETE_RETRY;
     this.http = new EvolutionHttp({
       baseUrl: options.baseUrl,
       apiKey: options.apiKey,
@@ -230,11 +237,25 @@ export class EvolutionProvider implements WhatsAppProvider {
     throw this.http.fail(call, response);
   }
 
+  /**
+   * Evolution 2.3.7 logs out a `connecting` or `open` instance before the delete, and it answers 400 for
+   * any error of that logout (for example, while the session changes state). A later call succeeds, so
+   * a 400 gets a bounded number of retries. Other statuses do not.
+   */
   async deleteInstance(name: ProviderInstanceName): Promise<void> {
     const call = this.call('deleteInstance', 'DELETE', '/instance/delete', name);
-    const response = await this.http.call(call);
-    if (response.status === 200 || response.status === 404) return;
-    throw this.http.fail(call, response);
+    for (let attempt = 1; ; attempt += 1) {
+      const response = await this.http.call(call);
+      if (response.status === 200 || response.status === 404) return;
+      if (response.status !== 400 || attempt >= this.deleteRetry.attempts) {
+        throw this.http.fail(call, response);
+      }
+      this.logger.warn(
+        { instance: name, attempt, status: response.status },
+        'Evolution refused the delete of an instance: retry',
+      );
+      await setTimeout(this.deleteRetry.delayMs);
+    }
   }
 
   async ping(): Promise<void> {
