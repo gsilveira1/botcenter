@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { TestingModule } from '@nestjs/testing';
 import { verifyWebhook } from '@botcenter/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { OperationalAlertsTask } from '../../src/maintenance/operational-alerts.task';
 import { MetricsService } from '../../src/metrics/metrics.service';
 import { QueuesService } from '../../src/queues/queues.service';
 import { OutboxService } from '../../src/services/outbox.service';
@@ -28,10 +29,7 @@ import { insertDelivery, messageStatusData } from '../support/webhooks';
  * private addresses (`NODE_ENV=test`, `EXTERNAL_HTTP_ALLOW_PRIVATE=true`). The HTTPS path of the client
  * has its own unit tests with a self-signed certificate (`external-http.client.spec.ts`).
  */
-const SETTINGS: WebhookDeliverySettings = {
-  requestTimeoutMs: 400,
-  retryDelaysSeconds: [0.2, 0.2],
-};
+const SETTINGS: WebhookDeliverySettings = { requestTimeoutMs: 400, retryDelaysSeconds: [0.2, 0.2] };
 
 let h: TestHarness;
 let worker: TestingModule;
@@ -41,10 +39,7 @@ beforeAll(async () => {
   receiver = await TestReceiver.start();
   h = await TestHarness.start({
     modules: [WebhooksApiModule],
-    env: {
-      EXTERNAL_HTTP_ALLOW_PRIVATE: 'true',
-      OUTBOX_DISPATCH_INTERVAL_MS: '100',
-    },
+    env: { EXTERNAL_HTTP_ALLOW_PRIVATE: 'true', OUTBOX_DISPATCH_INTERVAL_MS: '100' },
     override: (builder) => builder.overrideProvider(WEBHOOK_DELIVERY_SETTINGS).useValue(SETTINGS),
   });
   worker = await h.startWorker([WebhooksWorkerModule]);
@@ -58,12 +53,7 @@ afterAll(async () => {
 async function subscribe(tenantId: string, events = ['message.status']) {
   const path = `/hook/${randomUUID()}`;
   const row = await h.prisma.webhookSubscription.create({
-    data: {
-      tenantId,
-      url: `${receiver.url}${path}`,
-      events,
-      secretEncrypted: 'pending',
-    },
+    data: { tenantId, url: `${receiver.url}${path}`, events, secretEncrypted: 'pending' },
   });
   const secret = generateWebhookSecret();
   await h.prisma.webhookSubscription.update({
@@ -108,11 +98,7 @@ describe('outbox dispatcher and delivery worker', () => {
     const eventId = await emit(tenant.id);
 
     const delivery = await waitForStatus(eventId, sub.id, 'succeeded');
-    expect(delivery).toMatchObject({
-      attempts: 1,
-      lastStatusCode: 204,
-      nextAttemptAt: null,
-    });
+    expect(delivery).toMatchObject({ attempts: 1, lastStatusCode: 204, nextAttemptAt: null });
     const [request] = requestsTo(sub.path);
     expect(request?.headers['webhook-id']).toBe(eventId);
     expect(request?.headers['content-type']).toBe('application/json');
@@ -130,9 +116,7 @@ describe('outbox dispatcher and delivery worker', () => {
       created_at: expect.any(String),
       data: { status: 'delivered' },
     });
-    const event = await h.prisma.outboxEvent.findUniqueOrThrow({
-      where: { id: eventId },
-    });
+    const event = await h.prisma.outboxEvent.findUniqueOrThrow({ where: { id: eventId } });
     expect(event.dispatchedAt).toBeInstanceOf(Date);
     expect(await deliveredCount('succeeded')).toBe(before + 1);
   });
@@ -169,23 +153,25 @@ describe('outbox dispatcher and delivery worker', () => {
     expect(requests.map((request) => request.headers['webhook-id'])).toEqual([eventId, eventId]);
   });
 
-  it('marks a delivery dead after the last attempt (time limit) and redelivers it', async () => {
+  it('marks a delivery dead after the last attempt (time limit), alerts once, and redelivers it', async () => {
     const tenant = await h.createTenant();
-    const { key } = await h.createApiKey({
-      tenantId: tenant.id,
-      scopes: ['events:read'],
-    });
+    const { key } = await h.createApiKey({ tenantId: tenant.id, scopes: ['events:read'] });
     const sub = await subscribe(tenant.id);
     receiver.next(hang(), hang(), hang());
     const eventId = await emit(tenant.id);
 
     const dead = await waitForStatus(eventId, sub.id, 'dead');
-    expect(dead).toMatchObject({
-      attempts: 3,
-      lastError: 'timeout',
-      lastStatusCode: null,
-    });
+    expect(dead).toMatchObject({ attempts: 3, lastError: 'timeout', lastStatusCode: null });
     expect(dead.nextAttemptAt).toBeNull();
+
+    const alerts = worker.get(OperationalAlertsTask);
+    const now = new Date();
+    await alerts.checkWebhookFailures(now);
+    await alerts.checkWebhookFailures(now);
+    const raised = h.alerts.filter((alert) => alert.details?.['tenant_id'] === tenant.id);
+    expect(raised.map((alert) => alert.title)).toEqual([
+      'Webhook deliveries of a tenant are failing',
+    ]);
 
     const response = await h.inject({
       method: 'POST',
@@ -195,6 +181,14 @@ describe('outbox dispatcher and delivery worker', () => {
     expect(response.statusCode).toBe(202);
     const delivered = await waitForStatus(eventId, sub.id, 'succeeded');
     expect(delivered.attempts).toBe(1);
+
+    await alerts.checkWebhookFailures(new Date());
+    expect(
+      h.alerts.filter((alert) => alert.details?.['tenant_id'] === tenant.id).map((a) => a.title),
+    ).toEqual([
+      'Webhook deliveries of a tenant are failing',
+      'Resolved: webhook deliveries of a tenant succeed',
+    ]);
   });
 
   it('signs with the old and the new secret during a rotation', async () => {
@@ -202,9 +196,7 @@ describe('outbox dispatcher and delivery worker', () => {
     const sub = await subscribe(tenant.id);
     const newSecret = generateWebhookSecret();
     const box = h.get(SecretBox);
-    const current = await h.prisma.webhookSubscription.findUniqueOrThrow({
-      where: { id: sub.id },
-    });
+    const current = await h.prisma.webhookSubscription.findUniqueOrThrow({ where: { id: sub.id } });
     await h.prisma.webhookSubscription.update({
       where: { id: sub.id },
       data: {
@@ -244,9 +236,7 @@ describe('outbox dispatcher and delivery worker', () => {
       .deliver({ tenantId: tenant.id, deliveryId: delivery.id });
     expect(outcome).toBe('stopped');
     expect(requestsTo(sub.path)).toHaveLength(0);
-    const row = await h.prisma.webhookDelivery.findUniqueOrThrow({
-      where: { id: delivery.id },
-    });
+    const row = await h.prisma.webhookDelivery.findUniqueOrThrow({ where: { id: delivery.id } });
     expect(row).toMatchObject({ status: 'dead', lastError: 'webhook_deleted' });
   });
 
@@ -264,10 +254,7 @@ describe('outbox dispatcher and delivery worker', () => {
     expect(requestsTo(sub.path)).toHaveLength(1);
     // A job of another tenant never reads the row.
     const other = await h.createTenant();
-    const foreign = await deliveries.deliver({
-      tenantId: other.id,
-      deliveryId: delivery.id,
-    });
+    const foreign = await deliveries.deliver({ tenantId: other.id, deliveryId: delivery.id });
     expect(foreign).toBe('skipped');
   });
 
@@ -286,11 +273,8 @@ describe('outbox dispatcher and delivery worker', () => {
     expect(result['requeued']).toBeGreaterThanOrEqual(1);
     await waitFor(
       async () =>
-        (
-          await h.prisma.webhookDelivery.findUniqueOrThrow({
-            where: { id: delivery.id },
-          })
-        ).status === 'succeeded',
+        (await h.prisma.webhookDelivery.findUniqueOrThrow({ where: { id: delivery.id } }))
+          .status === 'succeeded',
     );
     // A second sweep finds nothing to add for this delivery.
     const again = await worker.get(WebhookSweepTask).run(new Date());
@@ -332,11 +316,9 @@ describe('outbox dispatcher concurrency and order', () => {
     expect(counts.reduce((sum, count) => sum + count, 0)).toBeLessThanOrEqual(
       OUTBOX_BATCH_SIZE + 50,
     );
-    expect(
-      await h.prisma.webhookDelivery.count({
-        where: { subscriptionId: sub.id },
-      }),
-    ).toBe(OUTBOX_BATCH_SIZE + 50);
+    expect(await h.prisma.webhookDelivery.count({ where: { subscriptionId: sub.id } })).toBe(
+      OUTBOX_BATCH_SIZE + 50,
+    );
     await waitFor(async () => requestsTo(sub.path).length === OUTBOX_BATCH_SIZE + 50, 30_000);
     const ids = requestsTo(sub.path).map((request) => request.headers['webhook-id']);
     expect(new Set(ids).size).toBe(OUTBOX_BATCH_SIZE + 50);

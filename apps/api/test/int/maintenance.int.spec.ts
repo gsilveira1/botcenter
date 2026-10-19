@@ -7,8 +7,10 @@ import { MaintenanceTaskRegistry } from '../../src/maintenance/maintenance-task.
 import { MaintenanceWorkerModule } from '../../src/maintenance/maintenance.module';
 import { MEDIA_OBJECT_STORE } from '../../src/maintenance/media-purge.task';
 import type { MediaObjectStore } from '../../src/maintenance/media-purge.task';
+import { OperationalAlertsTask } from '../../src/maintenance/operational-alerts.task';
 import type { MaintenanceTaskName } from '../../src/queues/queue-names';
 import { QueuesService } from '../../src/queues/queues.service';
+import { WebhooksApiModule } from '../../src/webhooks/webhooks.module';
 import { TestHarness } from '../support/harness';
 import { insertDelivery, messageStatusData } from '../support/webhooks';
 
@@ -36,6 +38,7 @@ let defaultInstance: Instance;
 
 beforeAll(async () => {
   h = await TestHarness.start({
+    modules: [WebhooksApiModule],
     override: (builder) => builder.overrideProvider(MEDIA_OBJECT_STORE).useValue(store),
   });
   // A scheduler of a task that no longer exists: the worker removes it at start.
@@ -73,6 +76,7 @@ describe('maintenance schedulers', () => {
     const schedulers = await h.get(QueuesService).get('maintenance').getJobSchedulers();
     expect(schedulers.map((scheduler) => scheduler.key).sort()).toEqual(
       [
+        'check-alerts',
         'purge-connect-tokens',
         'purge-idempotency-keys',
         'purge-media-objects',
@@ -111,20 +115,10 @@ describe('purge tasks', () => {
   it('deletes expired idempotency keys and connect tokens only', async () => {
     const tenantId = defaultTenant.id;
     const expired = await h.prisma.idempotencyKey.create({
-      data: {
-        tenantId,
-        key: `k-${randomUUID()}`,
-        requestHash: 'h',
-        expiresAt: ago(1_000),
-      },
+      data: { tenantId, key: `k-${randomUUID()}`, requestHash: 'h', expiresAt: ago(1_000) },
     });
     const valid = await h.prisma.idempotencyKey.create({
-      data: {
-        tenantId,
-        key: `k-${randomUUID()}`,
-        requestHash: 'h',
-        expiresAt: ago(-DAY),
-      },
+      data: { tenantId, key: `k-${randomUUID()}`, requestHash: 'h', expiresAt: ago(-DAY) },
     });
     const token = (expiresAt: Date) =>
       h.prisma.connectToken.create({
@@ -151,12 +145,7 @@ describe('purge tasks', () => {
     const tenantId = defaultTenant.id;
     const row = (dispatchedAt: Date | null) =>
       h.prisma.outboxEvent.create({
-        data: {
-          tenantId,
-          type: 'message.status',
-          payload: messageStatusData(),
-          dispatchedAt,
-        },
+        data: { tenantId, type: 'message.status', payload: messageStatusData(), dispatchedAt },
       });
     const old = await row(ago(2 * DAY));
     const fresh = await row(ago(60_000));
@@ -191,9 +180,7 @@ describe('purge tasks', () => {
     const result = await task('purge-messages').run(new Date());
     expect(result['deleted']).toBe(2);
     const left = await h.prisma.message.findMany({
-      where: {
-        id: { in: [shortOld.id, shortNew.id, defaultTen.id, defaultOld.id] },
-      },
+      where: { id: { in: [shortOld.id, shortNew.id, defaultTen.id, defaultOld.id] } },
     });
     expect(left.map((row) => row.id).sort()).toEqual([shortNew.id, defaultTen.id].sort());
   });
@@ -252,11 +239,9 @@ describe('purge tasks', () => {
     expect(result).toEqual({ deleted: 1, failed: 1 });
     expect(store.deleted).toContain(oldKey);
     expect(store.deleted).not.toContain(freshKey);
-    const keys = (
-      await h.prisma.mediaObject.findMany({
-        where: { tenantId: shortTenant.id },
-      })
-    ).map((row) => row.key);
+    const keys = (await h.prisma.mediaObject.findMany({ where: { tenantId: shortTenant.id } })).map(
+      (row) => row.key,
+    );
     expect(keys.sort()).toEqual([refusedKey, freshKey].sort());
     expect(h.alerts.map((alert) => alert.title)).toContain(
       'Media objects not deleted from the object storage',
@@ -265,5 +250,74 @@ describe('purge tasks', () => {
     store.refuse.clear();
     await task('purge-media-objects').run(new Date());
     expect(await h.prisma.mediaObject.findUnique({ where: { id: refused.id } })).toBeNull();
+  });
+});
+
+describe('operational alerts (check-alerts)', () => {
+  function titles(): string[] {
+    return h.alerts.map((alert) => alert.title);
+  }
+
+  it('alerts once when the outbound queue waits more than 30 s, and sends a recovery message', async () => {
+    const alerts = worker.get(OperationalAlertsTask);
+    const job = await h.get(QueuesService).add('outbound', 'send', {
+      tenantId: defaultTenant.id,
+      messageId: randomUUID(),
+      instanceId: defaultInstance.id,
+    });
+    const later = new Date(Date.now() + 31_000);
+    expect(await alerts.checkOutboundDelay(later)).toBe('opened');
+    expect(await alerts.checkOutboundDelay(later)).toBe('unchanged');
+    await job.remove();
+    expect(await alerts.checkOutboundDelay(later)).toBe('resolved');
+    expect(
+      titles().filter(
+        (title) => title.includes('Outbound queue') || title.includes('outbound queue'),
+      ),
+    ).toEqual(['Outbound queue delay above 30 s', 'Resolved: outbound queue delay is normal']);
+  });
+
+  it('alerts when more than 5 % of the sends of the last 10 min failed', async () => {
+    const alerts = worker.get(OperationalAlertsTask);
+    const rows = Array.from({ length: 20 }, (_, index) => ({
+      tenantId: defaultTenant.id,
+      instanceId: defaultInstance.id,
+      direction: 'outbound' as const,
+      type: 'text' as const,
+      status: index < 2 ? ('failed' as const) : ('delivered' as const),
+      contact: '5511987654321',
+      content: {},
+    }));
+    await h.prisma.message.createMany({ data: rows });
+    expect(await alerts.checkSendFailureRate(new Date())).toBe('opened');
+    await h.prisma.message.deleteMany({ where: { tenantId: defaultTenant.id, status: 'failed' } });
+    expect(await alerts.checkSendFailureRate(new Date())).toBe('resolved');
+  });
+
+  it('alerts when the outbox is late and exposes the lag gauge in the API process', async () => {
+    const alerts = worker.get(OperationalAlertsTask);
+    const event = await h.prisma.outboxEvent.create({
+      data: {
+        tenantId: defaultTenant.id,
+        type: 'message.status',
+        payload: messageStatusData(),
+        createdAt: ago(120_000),
+      },
+    });
+    expect(await alerts.checkOutboxLag(new Date())).toBe('opened');
+    const metrics = await h.inject({ method: 'GET', url: '/metrics' });
+    expect(metrics.body).toMatch(/botcenter_outbox_lag_seconds\{role="api"\} 1[2-9]\d/);
+    await h.prisma.outboxEvent.update({
+      where: { id: event.id },
+      data: { dispatchedAt: new Date() },
+    });
+    expect(await alerts.checkOutboxLag(new Date())).toBe('resolved');
+  });
+
+  it('runs all the checks as one task', async () => {
+    await expect(task('check-alerts').run(new Date())).resolves.toEqual({
+      opened: expect.any(Number),
+      resolved: expect.any(Number),
+    });
   });
 });

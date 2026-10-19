@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { OnModuleInit } from '@nestjs/common';
+import type { Queue } from 'bullmq';
 import { MetricsService } from '../metrics/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueuesService } from './queues.service';
@@ -12,6 +13,17 @@ const INSTANCE_STATUSES = [
   'disconnected',
   'logged_out',
 ] as const;
+
+/**
+ * The age in seconds of the oldest job that waits for a worker (`waiting` and `prioritized`). A delayed
+ * job is ready at timestamp + delay. The operational alerts use the same value as the gauge.
+ */
+export async function oldestWaitingDelaySeconds(queue: Queue, now = Date.now()): Promise<number> {
+  // The first job of each list in ascending order.
+  const firstJobs = await queue.getJobs(['waiting', 'prioritized'], 0, 0, true);
+  const readyAt = Math.min(now, ...firstJobs.map((job) => job.timestamp + (job.opts.delay ?? 0)));
+  return Math.max(0, (now - readyAt) / 1000);
+}
 
 /**
  * Sets the gauges that come from shared state (queue sizes and delays in Redis, instances by status in
@@ -38,13 +50,7 @@ export class SharedStateMetricsCollector implements OnModuleInit {
         for (const state of SIZE_STATES) {
           this.metrics.queueSize.set({ queue: name, state }, counts[state] ?? 0);
         }
-        // The first job of each list in ascending order. A delayed job is ready at timestamp + delay.
-        const firstJobs = await queue.getJobs(['waiting', 'prioritized'], 0, 0, true);
-        const readyAt = Math.min(
-          now,
-          ...firstJobs.map((job) => job.timestamp + (job.opts.delay ?? 0)),
-        );
-        this.metrics.queueDelay.set({ queue: name }, Math.max(0, (now - readyAt) / 1000));
+        this.metrics.queueDelay.set({ queue: name }, await oldestWaitingDelaySeconds(queue, now));
       }),
     );
   }

@@ -9,4 +9,6 @@ export const redisKeys = {
   quota: (name: string, subject: string, window: string) => `bc:quota:${name}:${subject}:${window}`,
   lock: (name: string) => `bc:lock:${name}`,
   inboundDedupe: (dedupeKey: string) => `bc:dedupe:inbound:${dedupeKey}`,
+  /** Hash of the open operational incidents (field: incident key, value: ISO open time). */
+  incidents: () => 'bc:incidents',
 } as const;
