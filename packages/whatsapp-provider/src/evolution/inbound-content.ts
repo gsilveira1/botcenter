@@ -54,6 +54,25 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+const TWO_POW_32 = 4_294_967_296;
+
+/**
+ * The declared file size of a media message. Baileys sends `fileLength` as a protobuf `Long`
+ * (`{ low, high, unsigned }`), a number, or a decimal string. Returns `undefined` for a missing, zero, or
+ * bad value: the download limit then protects the worker.
+ */
+export function declaredFileLength(value: unknown): number | undefined {
+  let size: number | undefined;
+  if (typeof value === 'number') {
+    size = value;
+  } else if (typeof value === 'string' && /^\d{1,16}$/.test(value)) {
+    size = Number(value);
+  } else if (isObject(value) && typeof value.low === 'number' && typeof value.high === 'number') {
+    size = (value.high >>> 0) * TWO_POW_32 + (value.low >>> 0);
+  }
+  return size !== undefined && Number.isSafeInteger(size) && size > 0 ? size : undefined;
+}
+
 function unwrap(message: Json): Json {
   let current = message;
   for (let depth = 0; depth < 5; depth += 1) {
@@ -134,6 +153,8 @@ export function mapInboundContent(rawMessage: Json | null | undefined): InboundC
     const fileName = str(body.fileName);
     if (caption) content.caption = caption;
     if (fileName) content.fileName = fileName;
+    const fileLength = declaredFileLength(body.fileLength);
+    if (fileLength !== undefined) content.fileLength = fileLength;
     return content;
   }
 

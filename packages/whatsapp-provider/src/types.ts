@@ -66,6 +66,16 @@ export interface DownloadedMedia {
   fileName?: string;
 }
 
+/** Options of `downloadMedia` (additive, wave 3). */
+export interface DownloadMediaOptions {
+  /**
+   * The maximum size of the decoded file in bytes. The adapter stops the read of the provider answer
+   * when the answer is larger than this size allows, and throws `MediaTooLargeError`. The adapter has a
+   * default limit (`MEDIA_MAX_BYTES` of the contracts).
+   */
+  maxBytes?: number;
+}
+
 export interface WhatsAppProvider {
   readonly name: string;
   createInstance(input: CreateInstanceInput): Promise<void>;
@@ -76,7 +86,11 @@ export interface WhatsAppProvider {
   /** Ends the session and deletes the instance in the provider. A missing instance is not an error. */
   deleteInstance(name: ProviderInstanceName): Promise<void>;
   sendMessage(name: ProviderInstanceName, input: SendMessageInput): Promise<SendMessageResult>;
-  downloadMedia(name: ProviderInstanceName, providerMessageId: string): Promise<DownloadedMedia>;
+  downloadMedia(
+    name: ProviderInstanceName,
+    providerMessageId: string,
+    options?: DownloadMediaOptions,
+  ): Promise<DownloadedMedia>;
   /** Readiness check. Throws `ProviderError` with code `unavailable` when the provider does not answer. */
   ping(): Promise<void>;
 }
@@ -110,6 +124,21 @@ export class ProviderError extends Error {
     super(message, options);
     this.name = 'ProviderError';
     this.retryable = RETRYABLE_CODES.has(code);
+  }
+}
+
+/**
+ * The media file is larger than the limit of the caller (`DownloadMediaOptions.maxBytes`). The code is
+ * `rejected`: a retry gives the same result. The adapter aborted the request, so the file never was
+ * completely in memory.
+ */
+export class MediaTooLargeError extends ProviderError {
+  constructor(
+    readonly maxBytes: number,
+    message = `The media file is larger than ${maxBytes} bytes`,
+  ) {
+    super('rejected', message);
+    this.name = 'MediaTooLargeError';
   }
 }
 
@@ -147,6 +176,11 @@ export type InboundContent =
       mimeType: string;
       caption?: string;
       fileName?: string;
+      /**
+       * The file size in bytes that the sender declared (WhatsApp `fileLength`), when the webhook has
+       * it. Use it to refuse a large file before the download (additive, wave 3).
+       */
+      fileLength?: number;
     }
   | { type: 'unsupported'; providerType: string };
 

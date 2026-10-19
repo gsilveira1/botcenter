@@ -5,12 +5,11 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { TransactionClient } from '../../prisma/prisma.service';
 import { OutboxService } from '../../services/outbox.service';
-import { TenantsService } from '../../services/tenants.service';
 import { ConversationMetrics } from '../conversation-metrics';
 import { eventContentFields, toStoredContent } from '../inbound-content';
 import type { StoredInboundContent } from '../inbound-content';
 import { InboundMediaService } from './inbound-media.service';
-import type { InboundMediaResult, StoredMediaFile } from './inbound-media.service';
+import type { InboundMediaResult } from './inbound-media.service';
 import type { InstanceContext } from './instance-context';
 
 /** An inbound `messages` row after the store step. */
@@ -69,7 +68,6 @@ export class InboundStoreService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
-    private readonly tenants: TenantsService,
     private readonly media: InboundMediaService,
     private readonly metrics: ConversationMetrics,
   ) {}
@@ -174,7 +172,19 @@ export class InboundStoreService {
       return;
     }
     const now = new Date();
-    const result = await this.media.copy(instance, providerMessageId, now);
+    const result = await this.media.copy(
+      instance,
+      {
+        messageId: stored.messageId,
+        providerMessageId,
+        mimeType: stored.content.mime_type,
+        ...(stored.content.file_name === undefined ? {} : { fileName: stored.content.file_name }),
+        ...(stored.content.file_length === undefined
+          ? {}
+          : { declaredBytes: stored.content.file_length }),
+      },
+      now,
+    );
     const content: StoredInboundContent = {
       ...stored.content,
       media_status: result.status,
@@ -193,33 +203,9 @@ export class InboundStoreService {
       if (updated.count !== 1) {
         return;
       }
-      if (result.status === 'stored') {
-        await this.writeMediaObject(tx, instance, result, now);
-      }
       await this.writeEvent(tx, instance, { ...stored, content }, mediaOf(result));
     });
     stored.content = content;
-  }
-
-  private async writeMediaObject(
-    tx: TransactionClient,
-    instance: InstanceContext,
-    file: StoredMediaFile,
-    now: Date,
-  ): Promise<void> {
-    const tenant = await this.tenants.get(instance.tenantId);
-    await tx.mediaObject.create({
-      data: {
-        id: file.mediaId,
-        tenantId: instance.tenantId,
-        key: file.key,
-        contentType: file.contentType,
-        sizeBytes: file.sizeBytes,
-        fileName: file.fileName,
-        direction: 'inbound',
-        expiresAt: new Date(now.getTime() + tenant.retentionDays * 86_400_000),
-      },
-    });
   }
 
   private async writeEvent(

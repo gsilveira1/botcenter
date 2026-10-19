@@ -4,7 +4,6 @@ import { Prisma } from '../../generated/prisma/client';
 import { MetricsService } from '../../metrics/metrics.service';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { OutboxService } from '../../services/outbox.service';
-import type { TenantsService } from '../../services/tenants.service';
 import { ConversationMetrics } from '../conversation-metrics';
 import type { InboundMediaService } from './inbound-media.service';
 import { InboundStoreService } from './inbound-store.service';
@@ -37,6 +36,7 @@ function build(options: { existing?: boolean; handoff?: boolean } = {}) {
   const message = {
     findUnique: vi.fn(async () => (options.existing ? stored : null)),
     create: vi.fn(async () => stored),
+    updateMany: vi.fn(async () => ({ count: 1 })),
   };
   const conversation = {
     findUnique: vi.fn(async () =>
@@ -53,7 +53,6 @@ function build(options: { existing?: boolean; handoff?: boolean } = {}) {
   const service = new InboundStoreService(
     { forTenant: () => scoped } as unknown as PrismaService,
     outbox as unknown as OutboxService,
-    {} as TenantsService,
     media as unknown as InboundMediaService,
     new ConversationMetrics(new MetricsService(testEnv())),
   );
@@ -118,5 +117,44 @@ describe('InboundStoreService', () => {
     await expect(race.service.store(instance, event, new Date())).resolves.toMatchObject({
       messageId: 'm1',
     });
+  });
+
+  it('gives the declared size of a media message to the media copy (ARCH-03, SEC-02)', async () => {
+    const { service, message, media } = build();
+    const content = {
+      type: 'media',
+      media_type: 'video',
+      mime_type: 'video/mp4',
+      file_length: 734_003_200,
+      media_status: 'pending',
+    };
+    message.create.mockResolvedValueOnce({ ...stored, content } as never);
+    media.copy.mockResolvedValueOnce({ status: 'too_large' } as never);
+    await service.store(
+      instance,
+      {
+        ...event,
+        content: {
+          type: 'media',
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          fileLength: 734_003_200,
+        },
+      },
+      new Date(),
+    );
+    expect(message.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ content }) }),
+    );
+    expect(media.copy).toHaveBeenCalledWith(
+      instance,
+      {
+        messageId: 'm1',
+        providerMessageId: 'wamid',
+        mimeType: 'video/mp4',
+        declaredBytes: 734_003_200,
+      },
+      expect.any(Date),
+    );
   });
 });

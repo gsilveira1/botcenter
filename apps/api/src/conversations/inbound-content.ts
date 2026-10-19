@@ -22,6 +22,8 @@ export type StoredInboundContent =
       mime_type: string;
       caption?: string;
       file_name?: string;
+      /** The size that the sender declared (WhatsApp `fileLength`), when the webhook has it. */
+      file_length?: number;
       media_status: InboundMediaStatus;
       media_id?: string;
     }
@@ -43,6 +45,7 @@ export function toStoredContent(content: InboundContent): StoredInboundContent {
         mime_type: content.mimeType,
         ...(content.caption === undefined ? {} : { caption: content.caption }),
         ...(content.fileName === undefined ? {} : { file_name: content.fileName }),
+        ...(content.fileLength === undefined ? {} : { file_length: content.fileLength }),
         media_status: 'pending',
       };
     case 'unsupported':

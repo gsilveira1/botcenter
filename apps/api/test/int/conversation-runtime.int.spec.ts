@@ -336,9 +336,39 @@ describe('inbound media', () => {
       direction: 'inbound',
       contentType: 'image/jpeg',
       sizeBytes: data.length,
+      // ARCH-13: the key comes from the message id, and the row has the expiry of the retention.
+      id: message.id,
+      key: `tenants/${s.tenantId}/inbound/${message.id}`,
     });
+    expect(media.expiresAt!.getTime()).toBeGreaterThan(Date.now() + 86_400_000);
     const download = await fetch(payload.media.url);
     expect(Buffer.from(await download.arrayBuffer())).toEqual(data);
+  });
+
+  it('refuses a file with a declared size above 16 MiB without a download (ARCH-03, SEC-02)', async () => {
+    const s = await setup();
+    const id = newMessageId();
+    h.evolution.clearCalls();
+    await h.evolution.emitInboundMedia(s.instance.providerName, {
+      from: nextContact(),
+      id,
+      mediaType: 'video',
+      mimeType: 'video/mp4',
+      data: Buffer.alloc(16 * 1024 * 1024 + 1),
+    });
+    await waitForConsumed(s.instance.id, id);
+    const message = await h.prisma.message.findFirstOrThrow({ where: { providerMessageId: id } });
+    expect(message.content).toMatchObject({
+      media_status: 'too_large',
+      file_length: 16 * 1024 * 1024 + 1,
+    });
+    expect(h.evolution.callsTo('/chat/getBase64FromMediaMessage')).toHaveLength(0);
+    const event = await h.prisma.outboxEvent.findFirstOrThrow({
+      where: { tenantId: s.tenantId, type: 'message.received' },
+    });
+    expect(event.payload).toMatchObject({ type: 'media' });
+    expect((event.payload as Record<string, unknown>)['media']).toBeUndefined();
+    expect(await h.prisma.mediaObject.count({ where: { id: message.id } })).toBe(0);
   });
 
   it('sends the event without media when the download fails', async () => {

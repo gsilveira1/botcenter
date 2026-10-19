@@ -1,3 +1,4 @@
+import { MEDIA_MAX_BYTES } from '@botcenter/contracts';
 import type { Dispatcher } from 'undici';
 import { consoleWarnLogger, type ProviderLogger } from '../logger.js';
 import {
@@ -5,6 +6,8 @@ import {
   type ConnectResult,
   type CreateInstanceInput,
   type DownloadedMedia,
+  type DownloadMediaOptions,
+  MediaTooLargeError,
   ProviderError,
   type ProviderConnectionState,
   type ProviderInstanceName,
@@ -19,6 +22,7 @@ import {
   errorMessages,
   type FetchLike,
   hasMessage,
+  ResponseTooLargeError,
 } from './http.js';
 import {
   createInstanceBody,
@@ -65,6 +69,17 @@ export interface EvolutionProviderOptions {
   interactiveFallback?: InteractiveFallback;
   /** Reject the WhatsApp calls to the connected number. Default `false`: it is the personal phone of a person. */
   rejectCalls?: boolean;
+}
+
+/** The JSON envelope around the base64 text of a media answer (mime type, file name, size, key). */
+const MEDIA_ENVELOPE_BYTES = 64 * 1024;
+
+/**
+ * The maximum size of a `getBase64FromMediaMessage` answer for a file of `maxBytes`: the base64 text
+ * (4 characters for each 3 bytes) plus the JSON envelope. For 16 MiB, the limit is about 21.4 MiB.
+ */
+export function mediaResponseLimit(maxBytes: number): number {
+  return Math.ceil(maxBytes / 3) * 4 + MEDIA_ENVELOPE_BYTES;
 }
 
 /** The name that `ping` asks for. It is never a real instance name (those are `inst_<uuid>`). */
@@ -274,18 +289,33 @@ export class EvolutionProvider implements WhatsAppProvider {
   async downloadMedia(
     name: ProviderInstanceName,
     providerMessageId: string,
+    options: DownloadMediaOptions = {},
   ): Promise<DownloadedMedia> {
+    const maxBytes = options.maxBytes ?? MEDIA_MAX_BYTES;
     // Evolution reads the message from its `Message` table (`DATABASE_SAVE_DATA_NEW_MESSAGE=true`).
+    // The answer is read as a stream with a hard limit (ARCH-03, SEC-02): a large file never is
+    // completely in memory.
     const call = this.call('downloadMedia', 'POST', '/chat/getBase64FromMediaMessage', name, {
       body: { message: { key: { id: providerMessageId } }, convertToMp4: false },
       timeoutMs: this.timeouts.mediaMs,
+      maxResponseBytes: mediaResponseLimit(maxBytes),
     });
-    const response = await this.expectOk(call);
+    let response: EvolutionResponse;
+    try {
+      response = await this.expectOk(call);
+    } catch (error) {
+      if (error instanceof ResponseTooLargeError) throw new MediaTooLargeError(maxBytes);
+      throw error;
+    }
     const body = response.body;
     const base64 = isObject(body) ? optionalString(body.base64) : undefined;
     if (!isObject(body) || !base64) throw this.http.fail(call, response, 'rejected');
+    // 4 base64 characters give at most 3 bytes: check the size before the decode.
+    if (Math.floor((base64.length * 3) / 4) - 2 > maxBytes) throw new MediaTooLargeError(maxBytes);
+    const data = Buffer.from(base64, 'base64');
+    if (data.length > maxBytes) throw new MediaTooLargeError(maxBytes);
     const media: DownloadedMedia = {
-      data: Buffer.from(base64, 'base64'),
+      data,
       mimeType: optionalString(body.mimetype) ?? 'application/octet-stream',
     };
     const fileName = optionalString(body.fileName);
@@ -344,7 +374,7 @@ export class EvolutionProvider implements WhatsAppProvider {
     method: EvolutionCall['method'],
     route: string,
     instanceName: ProviderInstanceName | undefined,
-    extra: { body?: unknown; query?: string; timeoutMs?: number } = {},
+    extra: { body?: unknown; query?: string; timeoutMs?: number; maxResponseBytes?: number } = {},
   ): EvolutionCall {
     const path = instanceName === undefined ? route : instancePath(route, instanceName);
     const call: EvolutionCall = {
@@ -356,6 +386,7 @@ export class EvolutionProvider implements WhatsAppProvider {
     };
     if (instanceName !== undefined) call.instanceName = instanceName;
     if (extra.body !== undefined) call.body = extra.body;
+    if (extra.maxResponseBytes !== undefined) call.maxResponseBytes = extra.maxResponseBytes;
     return call;
   }
 }
