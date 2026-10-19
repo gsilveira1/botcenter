@@ -1,10 +1,14 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
+import type { Redis } from 'ioredis';
 import { createShutdown } from './common/shutdown';
 import { loadEnv } from './config/env';
+import { createWorkerReadiness } from './health/worker-readiness';
 import { PinoNestLogger, createRootLogger, flushLogs, getLogger } from './logging/logger';
 import { MetricsService } from './metrics/metrics.service';
 import { closeServer, startWorkerMetricsServer } from './metrics/worker-metrics.server';
+import { PrismaService } from './prisma/prisma.service';
+import { REDIS } from './redis/redis.module';
 import { WorkerModule } from './worker.module';
 
 /**
@@ -26,7 +30,13 @@ async function main(): Promise<void> {
     logger: new PinoNestLogger(),
     abortOnError: false,
   });
-  const server = await startWorkerMetricsServer(app.get(MetricsService), env.WORKER_METRICS_PORT);
+  const readiness = createWorkerReadiness(app.get(PrismaService), app.get<Redis>(REDIS));
+  const server = await startWorkerMetricsServer(
+    app.get(MetricsService),
+    env.WORKER_METRICS_PORT,
+    '::',
+    readiness,
+  );
   logger.info({ env: env.NODE_ENV }, 'worker started');
 
   const shutdown = createShutdown({

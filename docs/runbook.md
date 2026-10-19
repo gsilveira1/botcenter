@@ -454,6 +454,14 @@ The Evolution API got `200` for these events, so it does not send them again. Ea
 3. Replay the failed jobs with the admin CLI: `bc exec api node dist/scripts/admin.js --help` shows the replay command of the release.
 4. Make sure that the panel "Failed inbound jobs" goes back to 0. The alert then resolves.
 
+### 17.8 Worker not ready (alert `WorkerNotReady`)
+
+The worker process answers, but its readiness probe fails: it cannot reach PostgreSQL or Redis. No job runs.
+
+1. Read the report of the probe: `bc exec worker wget -qO- http://127.0.0.1:9464/health/ready`. Each check shows `up` or `down` and an error code.
+2. Check the dependency: `bc ps postgres redis`, then `bc logs --since 15m postgres` or `bc logs --since 15m redis`.
+3. Fix the dependency. If the dependency is healthy and the probe still fails, restart the worker: `bc restart worker`.
+
 ## 18. Reference
 
 ### 18.1 Metrics of the application
@@ -470,6 +478,7 @@ The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard 
 | `botcenter_instance_messages_total` | counter | `instance_id`, `status` (`sent`, `failed`) |
 | `botcenter_webhook_deliveries_total` | counter | `result` (`succeeded`, `failed`, `dead`) |
 | `botcenter_rate_limit_denied_total` | counter | `scope` (`key`, `instance`) |
+| `botcenter_worker_ready` | gauge | none (worker process: 1 when PostgreSQL and Redis answer) |
 | `http_request_duration_seconds` | histogram | `method`, `route`, `status_code` |
 
 Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_backup_last_run_success`, `botcenter_backup_last_success_timestamp_seconds`, `botcenter_backup_duration_seconds`, `botcenter_backup_dump_size_bytes{database}`, `botcenter_restore_test_last_run_success`, `botcenter_restore_test_last_success_timestamp_seconds`.

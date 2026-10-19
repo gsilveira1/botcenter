@@ -168,6 +168,16 @@ groups:
           summary: 'Alloy cannot scrape the workers on {{ $labels.host }}'
           description: 'No message is sent and no event is processed. Check the logs of the service worker.'
 
+      # ARCH-17: the worker answers the scrape, but its readiness probe (PostgreSQL, Redis) fails.
+      - alert: WorkerNotReady
+        expr: min by (host) (botcenter_worker_ready) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The worker process on {{ $labels.host }} cannot reach PostgreSQL or Redis'
+          description: 'No job runs. Runbook: "Incident: worker not ready".'
+
       - alert: MetricsAbsent
         expr: absent(up{job="botcenter-api"})
         for: 10m

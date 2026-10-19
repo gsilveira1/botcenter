@@ -66,6 +66,7 @@ describe('alerts.yml', () => {
       'botcenter_instance_messages_total',
       'botcenter_webhook_deliveries_total',
       'botcenter_rate_limit_denied_total',
+      'botcenter_worker_ready',
       'botcenter_backup_last_run_success',
       'botcenter_backup_last_success_timestamp_seconds',
       'botcenter_restore_test_last_success_timestamp_seconds',

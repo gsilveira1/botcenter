@@ -228,3 +228,23 @@ tests:
             exp_annotations:
               summary: 'The send failure rate of the instance a is 16.67% in 10 minutes on h1'
               description: 'More than 5 % of the sends of this number failed. A ban of the number can be the cause. Runbook: "Incident: number banned".'
+
+  # ARCH-17: the worker answers, but it has no PostgreSQL or Redis connection.
+  - name: a worker that is alive but not ready fires after 2 minutes
+    interval: 1m
+    input_series:
+      - series: 'botcenter_worker_ready{host="h1", role="worker"}'
+        values: '1 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: WorkerNotReady
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: WorkerNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'The worker process on h1 cannot reach PostgreSQL or Redis'
+              description: 'No job runs. Runbook: "Incident: worker not ready".'
