@@ -22,7 +22,12 @@ export {
   FakeWhatsAppProvider,
 } from './testing/fake-whatsapp-provider.js';
 export {
+  connectionData,
+  type EnvelopeOptions,
   type EvolutionAckStatus,
   newMessageId,
+  updateData,
+  upsertData,
+  type UpsertOptions,
   webhookEnvelope,
 } from './testing/evolution-payloads.js';

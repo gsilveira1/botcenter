@@ -96,6 +96,8 @@ await fake.close();
 - Another process can control the fake with `POST /__fake/instances/{name}` and the body `{ "action": "connected", "phone": "..." }`. Other actions: `inbound_text` (`from`, `text`), `status` (`messageId`, `status`), and `logged_out`.
 - To run the fake as a process (Compose, k6), run `pnpm --filter @botcenter/whatsapp-provider fake-evolution`. Set `FAKE_EVOLUTION_API_KEY`, and optionally `FAKE_EVOLUTION_PORT`, `FAKE_EVOLUTION_HOST`, and `FAKE_EVOLUTION_AUTO_STATUS`.
 
+Payload builders (the same shapes as the fixtures): `webhookEnvelope`, `upsertData`, `updateData`, `connectionData`, and `newMessageId`. A consumer uses them to post Evolution webhook bodies without the fake server.
+
 `FakeWhatsAppProvider` is an in-memory `WhatsAppProvider` with no HTTP. It has `sent`, `calls`, `failNext(method, code)`, `setState`, `addInvalidRecipient`, `setMedia`, and `reset`.
 
 ## Evolution facts (verified)
