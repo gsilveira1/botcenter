@@ -337,3 +337,66 @@ describe('firewall-cloudflare.sh --dry-run', () => {
     expect(short.stderr).toContain('has only 1 ranges (minimum 10)');
   });
 });
+
+describe('deploy.sh and the release workflow (SEC-12)', () => {
+  const digest = 'a'.repeat(64);
+  function envDir(repository?: string): string {
+    const dir = tempDir('deploy-env');
+    writeFileSync(
+      path.join(dir, 'compose.env'),
+      `${repository ? `BOTCENTER_IMAGE_REPOSITORY=${repository}\n` : ''}BOTCENTER_IMAGE=old\n`,
+    );
+    return dir;
+  }
+  const deploy = (dir: string, tag: string, image: string) =>
+    run(repoPath('infra/scripts/deploy.sh'), [tag, image], { BOTCENTER_ENV_DIR: dir });
+
+  it('refuses an image of another owner or repository', async () => {
+    const dir = envDir('ghcr.io/acme/botcenter-api');
+    const result = await deploy(
+      dir,
+      'v1.2.3',
+      `ghcr.io/attacker/botcenter-api:v1.2.3@sha256:${digest}`,
+    );
+    expect(result.code).toBe(64);
+    expect(result.stderr).toContain(
+      'the image must be ghcr.io/acme/botcenter-api:v1.2.3@sha256:<digest>',
+    );
+  });
+
+  it('refuses an image tag that is not the release tag', async () => {
+    const dir = envDir('ghcr.io/acme/botcenter-api');
+    const result = await deploy(
+      dir,
+      'v1.2.3',
+      `ghcr.io/acme/botcenter-api:v1.2.2@sha256:${digest}`,
+    );
+    expect(result.code).toBe(64);
+  });
+
+  it('stops when compose.env does not pin the image repository', async () => {
+    const result = await deploy(
+      envDir(),
+      'v1.2.3',
+      `ghcr.io/acme/botcenter-api:v1.2.3@sha256:${digest}`,
+    );
+    expect(result.code).toBe(64);
+    expect(result.stderr).toContain('BOTCENTER_IMAGE_REPOSITORY');
+  });
+
+  it('scans the image before the push and verifies the attestation before the deploy', () => {
+    const release = readFileSync(repoPath('.github/workflows/release.yml'), 'utf8');
+    const scan = release.indexOf('name: Trivy scan of the local image');
+    const push = release.indexOf('name: Push the scanned image');
+    const load = release.indexOf('load: true');
+    expect(load).toBeGreaterThan(-1);
+    expect(scan).toBeGreaterThan(load);
+    expect(push).toBeGreaterThan(scan);
+    expect(release.slice(0, scan)).not.toMatch(/push: true/);
+    expect(release).toContain('actions/attest-build-provenance@');
+    expect(release).toContain(
+      'gh attestation verify "oci://${IMAGE}" --repo "${GITHUB_REPOSITORY}"',
+    );
+    expect(release).toContain('ghcr\\.io/${OWNER}/botcenter-api:${TAG}@sha256:[0-9a-f]{64}$');
+  });
+});

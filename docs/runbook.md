@@ -263,11 +263,13 @@ Use a test number, never a personal number of a team member.
 ## 11. Deploy a release
 
 1. Merge `develop` into `main` and tag the release (`vX.Y.Z`). Push the tag.
-2. The `Release` workflow builds the image, pushes it to GHCR, and scans it with Trivy. Its summary shows the image with the digest and the deploy command.
+2. The `Release` workflow builds the image, scans it with Trivy, and pushes it to GHCR only when the scan passes. Then it attests the build provenance. Its summary shows the image with the digest and the deploy command.
 3. Read the migrations of the release. A migration must be backward compatible (add columns and tables; remove them in a later release), because a rollback does not revert a migration.
 4. Deploy. Use one of the two methods:
-   - Over Tailscale SSH: `sudo /opt/botcenter/infra/scripts/deploy.sh vX.Y.Z ghcr.io/<owner>/botcenter-api:vX.Y.Z@sha256:<digest>`.
-   - With the `deploy` job of the `Release` workflow (Actions > Release > Run workflow, with the tag and the image). The environment `production` needs the approval of a reviewer.
+   - Over Tailscale SSH: first verify the attestation on your computer: `gh attestation verify oci://ghcr.io/<owner>/botcenter-api:vX.Y.Z@sha256:<digest> --repo <owner>/botcenter`. Then run `sudo /opt/botcenter/infra/scripts/deploy.sh vX.Y.Z ghcr.io/<owner>/botcenter-api:vX.Y.Z@sha256:<digest>`.
+   - With the `deploy` job of the `Release` workflow (Actions > Release > Run workflow, with the tag and the image). The environment `production` needs the approval of a reviewer. The job accepts only `ghcr.io/<owner>/botcenter-api:<tag>@sha256:<digest>` and verifies the attestation.
+
+   `deploy.sh` accepts only `BOTCENTER_IMAGE_REPOSITORY` of `/etc/botcenter/compose.env` with the release tag (SEC-12). Set it once: `BOTCENTER_IMAGE_REPOSITORY=ghcr.io/<owner>/botcenter-api`.
    CAUTION: When a release changes the Compose networks (for example the fixed subnets of `v0.1.0`), `up -d` cannot change a network that exists. Stop the stack first in a period with low traffic: `bc down` (the volumes stay), then run `deploy.sh`.
 
 5. The script stops with an alert when a health check fails. Then do a rollback: run `deploy.sh` with the previous tag and the previous image (the alert and `/etc/botcenter/compose.env.previous` have it).

@@ -2,6 +2,12 @@
 # Deploys a release on the production host. The release workflow prints the command:
 #   sudo /opt/botcenter/infra/scripts/deploy.sh v0.1.0 ghcr.io/<owner>/botcenter-api:v0.1.0@sha256:<digest>
 #
+# SEC-12: the image must be BOTCENTER_IMAGE_REPOSITORY of compose.env (for example
+# ghcr.io/<owner>/botcenter-api), with the tag of the release and a digest. Only root can change
+# compose.env, so the holder of the deploy key cannot deploy an image of another owner. Verify the build
+# attestation before a manual deploy: gh attestation verify oci://<image> --repo <owner>/botcenter
+# (the deploy job of the release workflow does it).
+#
 # Steps:
 #   1. Check out the tag in /opt/botcenter (the Compose files, the Caddyfile, and the scripts of the release).
 #   2. Write the image (tag AND digest) to compose.env. The previous value goes to compose.env.previous.
@@ -39,10 +45,16 @@ image="$2"
   log_error "the tag '$tag' is not a release tag (vX.Y.Z)"
   exit 64
 }
-[[ "$image" =~ ^[a-z0-9./_-]+:[0-9A-Za-z._-]+@sha256:[0-9a-f]{64}$ ]] || {
-  log_error "the image must have a tag and a digest (name:tag@sha256:...)"
+repository="$(sed -n 's/^BOTCENTER_IMAGE_REPOSITORY=//p' "$ENV_FILE" 2>/dev/null | tail -1)"
+[[ "$repository" =~ ^[a-z0-9.-]+/[a-z0-9._-]+/botcenter-api$ ]] || {
+  log_error "set BOTCENTER_IMAGE_REPOSITORY=ghcr.io/<owner>/botcenter-api in $ENV_FILE (the only image that this host deploys)"
   exit 64
 }
+expected="${repository}:${tag}@sha256:"
+if [[ "${image:0:${#expected}}" != "$expected" || ! "${image:${#expected}}" =~ ^[0-9a-f]{64}$ ]]; then
+  log_error "the image must be ${repository}:${tag}@sha256:<digest>"
+  exit 64
+fi
 require_commands git docker curl jq
 previous="$(sed -n 's/^BOTCENTER_IMAGE=//p' "$ENV_FILE" | tail -1)"
 
