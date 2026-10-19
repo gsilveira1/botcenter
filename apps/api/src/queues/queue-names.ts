@@ -15,11 +15,23 @@ export const QUEUE_NAMES = [
 ] as const;
 export type QueueName = (typeof QUEUE_NAMES)[number];
 
-/** `outbound`: send one message (messages slice). */
+/** `outbound`: send one message (messages slice). The job id is the message id. */
 export interface OutboundJob {
   tenantId: string;
   messageId: string;
   instanceId: string;
+  /**
+   * Set after a send that the provider accepted. A retry of the job (for example after a database error)
+   * then writes the result and does not send the message again.
+   */
+  providerMessageId?: string;
+  /** Sends that ended in a timeout or a network error (the message can be on WhatsApp already). */
+  ambiguousSends?: number;
+}
+
+/** `outbound`, job name `sweep`: the repeatable job that enqueues `queued` messages without a job again. */
+export interface OutboundSweepJob {
+  task: 'sweep';
 }
 
 /** A provider event in a job: `occurredAt` is an ISO string. The inbound worker makes it a `Date` again. */
@@ -72,7 +84,7 @@ export interface InstancesJob {
 }
 
 export interface JobPayloads {
-  outbound: OutboundJob;
+  outbound: OutboundJob | OutboundSweepJob;
   inbound: InboundJob;
   webhooks: WebhookJob;
   timers: TimerJob;

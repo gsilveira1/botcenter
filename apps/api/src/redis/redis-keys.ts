@@ -13,4 +13,6 @@ export const redisKeys = {
   connectCodes: (instanceId: string) => `bc:connect:codes:${instanceId}`,
   /** Pub/sub channel of the connect events of an instance (worker to the API SSE streams). */
   connectChannel: (instanceId: string) => `bc:connect:events:${instanceId}`,
+  /** Send token bucket of an instance (messages slice, Lua script). */
+  outboundBucket: (instanceId: string) => `bc:bucket:instance:${instanceId}`,
 } as const;

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { OnModuleDestroy } from '@nestjs/common';
-import { UnrecoverableError, Worker } from 'bullmq';
+import { DelayedError, UnrecoverableError, Worker } from 'bullmq';
 import type { Job, WorkerOptions } from 'bullmq';
 import { ENV } from '../config/env';
 import type { AppEnv } from '../config/env';
@@ -13,9 +13,20 @@ import { CONCURRENCY_ENV } from './queue-names';
 import { DEFAULT_JOB_OPTIONS } from './queues.service';
 import type { JobPayloads, QueueName } from './queue-names';
 
-export { UnrecoverableError };
+export { DelayedError, UnrecoverableError };
 
-/** The function that processes one job. Throw to retry (with backoff); throw `UnrecoverableError` to fail at once. */
+/**
+ * True for the error that a processor throws after `job.moveToDelayed(...)`. The job waits again; this is
+ * not a failure and not an attempt (for example, no token in the send rate limit).
+ */
+export function isDelayedError(error: unknown): boolean {
+  return error instanceof DelayedError || (error as Error | undefined)?.name === 'DelayedError';
+}
+
+/**
+ * The function that processes one job. Throw to retry (with backoff); throw `UnrecoverableError` to fail at
+ * once. Call `job.moveToDelayed(timestamp, job.token)` and throw `DelayedError` to wait without an attempt.
+ */
 export type JobProcessor<N extends QueueName> = (job: Job<JobPayloads[N]>) => Promise<unknown>;
 
 export interface CreateWorkerOptions {
@@ -106,6 +117,10 @@ export class WorkerFactory implements OnModuleDestroy {
         this.metrics.jobsTotal.inc({ queue, result: 'completed' });
         return result;
       } catch (error) {
+        if (isDelayedError(error)) {
+          this.metrics.jobsTotal.inc({ queue, result: 'delayed' });
+          throw error;
+        }
         this.metrics.jobsTotal.inc({ queue, result: 'failed' });
         this.logger.warn(
           { err: error, attempt: job.attemptsMade + 1, job_name: job.name },

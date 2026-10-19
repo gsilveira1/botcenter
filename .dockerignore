@@ -1,0 +1,26 @@
+# Build context of infra/docker/api.Dockerfile (the repository root).
+# Keep every workspace package.json: `pnpm install --frozen-lockfile` compares them with the lockfile.
+**/node_modules
+**/dist
+**/.turbo
+**/coverage
+**/*.tsbuildinfo
+**/*.log
+.git
+.github
+.pnpm-store
+apps/api/src/generated
+
+# Secrets and local files
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+
+# Not part of the image
+docs
+infra/*
+!infra/docker/botcenter-entrypoint.sh
+tests/*/*
+!tests/*/package.json
