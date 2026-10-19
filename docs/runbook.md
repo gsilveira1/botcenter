@@ -414,9 +414,9 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 5. If the Evolution API answers slowly, check its memory (`docker stats --no-stream`) and the host CPU. Do procedure 15 if a trigger occurred.
 6. If Redis refuses writes (`OOM command not allowed` in the logs), Redis is full: `noeviction` keeps the jobs. Increase `REDIS_MAXMEMORY` and the Redis memory limit, then `bc up -d redis`. Find the queue that grows.
 
-### 17.3 Number banned (alerts `SendFailureRateHigh`, `InstanceLoggedOut`)
+### 17.3 Number banned (alerts `SendFailureRateHigh`, `InstanceSendFailureRateHigh`, `InstanceLoggedOut`)
 
-1. Find the instance with the failures: the logs of the worker show the instance id and the failure reason.
+1. Find the instance with the failures: the alert `InstanceSendFailureRateHigh` and the panel "Send failure rate of each instance" show the instance id. The logs of the worker show the failure reason.
 2. Tell the tenant at once. A banned number cannot send. Only the owner can appeal to WhatsApp.
 3. Stop the sends to that instance: the tenant must stop its campaign. Lower the `rateLimitPerMinute` of the instance.
 4. Check the opt-in of the recipients and the volume of the tenant. The mitigations of the architecture: rate limit for each number, gradual warm-up of new numbers, typing delay, sends only to users with opt-in.
@@ -445,6 +445,15 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 2. If the server does not answer, use the web console to read the boot messages. Reboot from the console.
 3. If the disk or the server is lost, restore the server from the Hetzner backup (daily snapshot), or make a new host and do procedure 14.
 
+### 17.7 Inbound jobs failed (alert `InboundJobsFailed`)
+
+The Evolution API got `200` for these events, so it does not send them again. Each failed job is a user message that the bot did not store or answer.
+
+1. Find the cause: `bc logs --since 1h worker | grep -i inbound`. Usual causes: PostgreSQL or Redis was not available for a long time, or a data error.
+2. Fix the cause. Make sure that `bc ps` shows `postgres`, `redis`, and `worker` healthy.
+3. Replay the failed jobs with the admin CLI: `bc exec api node dist/scripts/admin.js --help` shows the replay command of the release.
+4. Make sure that the panel "Failed inbound jobs" goes back to 0. The alert then resolves.
+
 ## 18. Reference
 
 ### 18.1 Metrics of the application
@@ -457,6 +466,7 @@ The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard 
 | `botcenter_queue_delay_seconds` | gauge | `queue` |
 | `botcenter_queue_size` | gauge | `queue`, `state` |
 | `botcenter_messages_total` | counter | `status` |
+| `botcenter_instance_messages_total` | counter | `instance_id`, `status` (`sent`, `failed`) |
 | `botcenter_webhook_deliveries_total` | counter | `result` (`succeeded`, `failed`, `dead`) |
 | `botcenter_rate_limit_denied_total` | counter | `scope` (`key`, `instance`) |
 | `http_request_duration_seconds` | histogram | `method`, `route`, `status_code` |

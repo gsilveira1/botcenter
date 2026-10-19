@@ -159,3 +159,54 @@ tests:
             exp_annotations:
               summary: '40% of the webhook deliveries failed in 15 minutes on h2'
               description: 'A client endpoint does not answer 2xx. The deliveries retry (1 min to 6 h). Tell the owner of the endpoint.'
+
+  # ARCH-01: a failed inbound job is a user message that the bot never stored.
+  - name: a failed inbound job fires after 1 minute
+    interval: 1m
+    input_series:
+      - series: 'botcenter_queue_size{queue="inbound", state="failed", host="h1", role="api"}'
+        values: '0 0 1 1 1 1'
+      - series: 'botcenter_queue_size{queue="outbound", state="failed", host="h1", role="api"}'
+        values: '5 5 5 5 5 5'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: InboundJobsFailed
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: InboundJobsFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: '1 inbound job(s) failed on h1: the bot did not process these user messages'
+              description: 'An inbound job failed all its attempts. Find the cause in the worker logs, then replay the jobs. Runbook: "Incident: inbound jobs failed".'
+
+  # ARCH-06: one banned number of many must fire, also when the global rate stays low.
+  - name: the send failure rate of one instance above 5 % fires with enough volume
+    interval: 1m
+    input_series:
+      # Instance a: 10 sends and 2 failures per minute (16.7 %).
+      - series: 'botcenter_instance_messages_total{instance_id="a", status="sent", host="h1", role="worker"}'
+        values: '0+10x20'
+      - series: 'botcenter_instance_messages_total{instance_id="a", status="failed", host="h1", role="worker"}'
+        values: '0+2x20'
+      # Instance b: 500 sends per minute, no failure (the global rate stays below 5 %).
+      - series: 'botcenter_instance_messages_total{instance_id="b", status="sent", host="h1", role="worker"}'
+        values: '0+500x20'
+      # Instance c: low volume (1 send and 1 failure in 10 minutes).
+      - series: 'botcenter_instance_messages_total{instance_id="c", status="sent", host="h1", role="worker"}'
+        values: '0+0.1x20'
+      - series: 'botcenter_instance_messages_total{instance_id="c", status="failed", host="h1", role="worker"}'
+        values: '0+0.1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: InstanceSendFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+              instance_id: a
+            exp_annotations:
+              summary: 'The send failure rate of the instance a is 16.67% in 10 minutes on h1'
+              description: 'More than 5 % of the sends of this number failed. A ban of the number can be the cause. Runbook: "Incident: number banned".'

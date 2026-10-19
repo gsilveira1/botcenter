@@ -8,6 +8,7 @@
 #   botcenter_queue_delay_seconds{queue}        gauge: age of the oldest waiting job of a queue
 #   botcenter_queue_size{queue,state}           gauge: jobs per queue and state
 #   botcenter_messages_total{status}            counter: outbound messages per status
+#   botcenter_instance_messages_total{instance_id,status}  counter: sends of each instance (sent, failed)
 #   botcenter_webhook_deliveries_total{result}  counter: webhook delivery attempts (succeeded, failed, dead)
 #   botcenter_rate_limit_denied_total{scope}    counter: denied requests (key, instance)
 #   http_request_duration_seconds               histogram: API latency (method, route, status_code)
@@ -46,6 +47,17 @@ groups:
           summary: 'The outbound queue delay is {{ $value | humanizeDuration }} on {{ $labels.host }}'
           description: 'Messages wait more than 30 s before the send. This is also a trigger to scale up. Runbook: "Incident: queue backlog".'
 
+      # ARCH-01: Evolution got 200, so it does not send the event again. A failed job is a lost message
+      # until an operator replays it.
+      - alert: InboundJobsFailed
+        expr: max by (host) (botcenter_queue_size{queue="inbound", state="failed"}) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $value }} inbound job(s) failed on {{ $labels.host }}: the bot did not process these user messages'
+          description: 'An inbound job failed all its attempts. Find the cause in the worker logs, then replay the jobs. Runbook: "Incident: inbound jobs failed".'
+
       - alert: QueueDelayHigh
         expr: max by (host, queue) (botcenter_queue_delay_seconds{queue=~"inbound|webhooks|timers"}) > 120
         for: 5m
@@ -72,6 +84,23 @@ groups:
         annotations:
           summary: 'The send failure rate is {{ $value | humanizePercentage }} in 10 minutes on {{ $labels.host }}'
           description: 'More than 5 % of the sends failed. Check the failure reasons in the logs (service=worker). A ban can be the cause. Runbook: "Incident: number banned".'
+
+      # ARCH-06: one banned number of many. The global rule above stays quiet when the other numbers send more.
+      - alert: InstanceSendFailureRateHigh
+        expr: |
+          (
+            sum by (host, instance_id) (increase(botcenter_instance_messages_total{status="failed"}[10m]))
+            /
+            sum by (host, instance_id) (increase(botcenter_instance_messages_total{status=~"sent|failed"}[10m]))
+          ) > 0.05
+          and
+          sum by (host, instance_id) (increase(botcenter_instance_messages_total{status=~"sent|failed"}[10m])) >= 20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The send failure rate of the instance {{ $labels.instance_id }} is {{ $value | humanizePercentage }} in 10 minutes on {{ $labels.host }}'
+          description: 'More than 5 % of the sends of this number failed. A ban of the number can be the cause. Runbook: "Incident: number banned".'
 
       - alert: WebhookDeliveryFailuresHigh
         expr: |

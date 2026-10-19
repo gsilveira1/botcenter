@@ -864,6 +864,114 @@
       ]
     },
     {
+      "type": "timeseries",
+      "title": "Send failure rate of each instance (10 min)",
+      "id": 23,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "botcenter_instance_messages_total: failed / (sent + failed) for each instance. Alert InstanceSendFailureRateHigh above 5 % with at least 20 sends.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance_id) (increase(botcenter_instance_messages_total{status=\"failed\",host=~\"$host\"}[10m])) / sum by (instance_id) (increase(botcenter_instance_messages_total{status=~\"sent|failed\",host=~\"$host\"}[10m]))",
+          "legendFormat": "{{instance_id}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Failed inbound jobs",
+      "id": 24,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Jobs of the inbound queue in the failed set (alert InboundJobsFailed). Each job is a user message that the bot did not process.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(botcenter_queue_size{queue=\"inbound\",state=\"failed\",host=~\"$host\"})",
+          "legendFormat": "failed inbound jobs"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "Host",
       "id": 19,
@@ -872,7 +980,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 56
       },
       "panels": []
     },
@@ -889,7 +997,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 49
+        "y": 57
       },
       "fieldConfig": {
         "defaults": {
@@ -951,7 +1059,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 49
+        "y": 57
       },
       "fieldConfig": {
         "defaults": {
@@ -1013,7 +1121,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 49
+        "y": 57
       },
       "fieldConfig": {
         "defaults": {
