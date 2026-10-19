@@ -85,10 +85,14 @@ export const ConversationTransitionedData = z.object({
 });
 export type ConversationTransitionedData = z.infer<typeof ConversationTransitionedData>;
 
-/** `instance.status`: a new lifecycle status of an instance. */
+/**
+ * `instance.status`: a new lifecycle status of an instance. `previous_status` is the status before the
+ * change (additive field of wave 2: the API always sends it).
+ */
 export const InstanceStatusData = z.object({
   ...instanceShape,
   status: InstanceStatus,
+  previous_status: InstanceStatus.optional(),
   phone_masked: MaskedPhoneNumber.nullable(),
 });
 export type InstanceStatusData = z.infer<typeof InstanceStatusData>;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   ConnectEvent,
+  ConnectInstanceConnectedResponse,
   ConnectInstanceRequest,
   ConnectInstanceResponse,
   CreateInstanceRequest,
@@ -171,5 +172,14 @@ describe('ConnectEvent', () => {
     [{ type: 'unknown' }],
   ])('refuses %j', (event) => {
     expect(ConnectEvent.safeParse(event).success).toBe(false);
+  });
+});
+
+describe('ConnectInstanceConnectedResponse', () => {
+  it('accepts only the connected status', () => {
+    expect(ConnectInstanceConnectedResponse.safeParse({ status: 'connected' }).success).toBe(true);
+    expect(ConnectInstanceConnectedResponse.safeParse({ status: 'connecting' }).success).toBe(
+      false,
+    );
   });
 });

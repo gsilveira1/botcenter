@@ -85,4 +85,11 @@ describe('WebhookEvent', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('accepts an optional previous_status in instance.status and refuses an unknown value', () => {
+    const schema = EVENT_DATA_SCHEMAS['instance.status'];
+    const data = samples['instance.status'];
+    expect(schema.safeParse({ ...data, previous_status: 'connecting' }).success).toBe(true);
+    expect(schema.safeParse({ ...data, previous_status: 'gone' }).success).toBe(false);
+  });
 });
