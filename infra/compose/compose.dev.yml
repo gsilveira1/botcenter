@@ -74,10 +74,8 @@ services:
       - path: ./evolution.flags.env
     environment:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-dev-evolution-api-key}
-      DATABASE_CONNECTION_URI: postgresql://evolution:${EVOLUTION_DB_PASSWORD:-change-me}@postgres:5432/evolution?schema=evolution_api
+      DATABASE_CONNECTION_URI: postgresql://evolution:${EVOLUTION_DB_PASSWORD:-change-me}@postgres:5432/evolution?schema=public
       CACHE_REDIS_URI: redis://redis:6379/1
-      # Development only: more log lines than production.
-      LOG_LEVEL: ERROR,WARN,INFO
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     ports:
@@ -85,7 +83,12 @@ services:
     volumes:
       - evolution-instances:/evolution/instances
     healthcheck:
-      test: ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1']
+      # A request without the key must get 401. Do not use `GET /`: it calls web.whatsapp.com.
+      test:
+        [
+          'CMD-SHELL',
+          "wget -S -q -O /dev/null http://127.0.0.1:8080/instance/fetchInstances 2>&1 | grep -q 'HTTP/1.1 401'",
+        ]
       interval: 10s
       timeout: 5s
       retries: 12

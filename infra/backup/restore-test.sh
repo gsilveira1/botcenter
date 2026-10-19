@@ -122,8 +122,8 @@ latest_migration="$(psql_value botcenter "SELECT migration_name FROM _prisma_mig
 tenants="$(psql_value botcenter "SELECT count(*) FROM tenants")"
 instances="$(psql_value botcenter "SELECT count(*) FROM instances")"
 messages="$(psql_value botcenter "SELECT count(*) FROM messages")"
-evolution_instances="$(psql_value evolution 'SELECT count(*) FROM evolution_api."Instance"')"
-evolution_sessions="$(psql_value evolution 'SELECT count(*) FROM evolution_api."Session"')"
+evolution_instances="$(psql_value evolution 'SELECT count(*) FROM "Instance"')"
+evolution_sessions="$(psql_value evolution 'SELECT count(*) FROM "Session"')"
 log "migrations=${migrations} latest=${latest_migration} tenants=${tenants} instances=${instances} messages=${messages} evolution_instances=${evolution_instances} evolution_sessions=${evolution_sessions}"
 
 if ((migrations < 1)); then

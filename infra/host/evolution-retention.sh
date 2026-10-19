@@ -20,7 +20,7 @@ trap on_exit EXIT
 
 require_commands docker curl jq
 days="${EVOLUTION_MESSAGE_RETENTION_DAYS:-7}"
-schema="${EVOLUTION_DB_SCHEMA:-evolution_api}"
+schema="${EVOLUTION_DB_SCHEMA:-public}"
 batch="${EVOLUTION_RETENTION_BATCH:-5000}"
 [[ "$days" =~ ^[0-9]+$ && "$batch" =~ ^[0-9]+$ && "$schema" =~ ^[a-z_]+$ ]] || {
   log_error "EVOLUTION_MESSAGE_RETENTION_DAYS, EVOLUTION_RETENTION_BATCH, or EVOLUTION_DB_SCHEMA is not valid"
