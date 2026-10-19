@@ -4,6 +4,7 @@ import { RouteParamtypes } from '@nestjs/common/enums/route-paramtypes.enum';
 import { ProblemDetails } from '@botcenter/contracts';
 import { z } from 'zod';
 import { isZodDto } from '../common/zod-dto';
+import { SKIP_IDEMPOTENCY } from '../idempotency/idempotency.interceptor';
 import { API_OPERATION, API_RESPONSES } from './openapi.decorators';
 import type { ApiOperationOptions, ApiResponseEntry } from './openapi.decorators';
 import { listRoutes } from './routes';
@@ -124,7 +125,10 @@ function buildOperation(route: RouteInfo, components: Components): JsonSchema {
 
   const writes =
     ['POST', 'PUT', 'DELETE'].includes(route.httpMethod) && route.path.startsWith('/v1/');
-  if (writes) {
+  const skipsIdempotency =
+    Reflect.getMetadata(SKIP_IDEMPOTENCY, route.handler) === true ||
+    Reflect.getMetadata(SKIP_IDEMPOTENCY, route.controller) === true;
+  if (writes && !skipsIdempotency) {
     parameters.push({
       name: 'Idempotency-Key',
       in: 'header',

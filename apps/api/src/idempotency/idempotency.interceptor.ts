@@ -13,7 +13,8 @@ export const IDEMPOTENCY_HEADER = 'idempotency-key';
 export const IDEMPOTENCY_REPLAYED_HEADER = 'Idempotency-Replayed';
 const KEY_PATTERN = /^[\x21-\x7e]{1,255}$/;
 const METHODS = new Set(['POST', 'PUT', 'DELETE']);
-const SKIP_IDEMPOTENCY = 'botcenter:skip-idempotency';
+/** Metadata key of `@SkipIdempotency()`. The OpenAPI generator reads it too. */
+export const SKIP_IDEMPOTENCY = 'botcenter:skip-idempotency';
 
 /** The route ignores `Idempotency-Key` (for example, a response with a secret that must not be stored). */
 export const SkipIdempotency = () => SetMetadata(SKIP_IDEMPOTENCY, true);
