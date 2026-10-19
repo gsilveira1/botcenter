@@ -169,24 +169,36 @@ model ApiKey {
 // ---------------------------------------------------------------------------
 
 model Instance {
-  id                 String         @id @default(uuid(7)) @db.Uuid
-  tenantId           String         @db.Uuid
+  id                  String         @id @default(uuid(7)) @db.Uuid
+  tenantId            String         @db.Uuid
   /// Opaque id of the end user in the client product.
-  externalRef        String
+  externalRef         String
   /// Name of the instance in the provider: `inst_<uuid>`. Never the phone or the name of the user.
-  providerName       String         @unique
-  status             InstanceStatus @default(created)
+  providerName        String         @unique
+  status              InstanceStatus @default(created)
   /// Masked phone number (`5511*****4321`), known after the connection.
-  phoneMasked        String?
+  phoneMasked         String?
   /// Time when the end user accepted the terms and the ban risk notice.
-  consentAt          DateTime       @db.Timestamptz(3)
+  consentAt           DateTime       @db.Timestamptz(3)
   /// Host that runs the session (phase 3 routing). Phase 1 has one host.
-  host               String         @default("primary")
-  rateLimitPerMinute Int
-  botId              String?        @db.Uuid
-  deletedAt          DateTime?      @db.Timestamptz(3)
-  createdAt          DateTime       @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime       @updatedAt @db.Timestamptz(3)
+  host                String         @default("primary")
+  rateLimitPerMinute  Int
+  botId               String?        @db.Uuid
+  deletedAt           DateTime?      @db.Timestamptz(3)
+  createdAt           DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime       @updatedAt @db.Timestamptz(3)
+  /// Time of the last status change (clock of the Bot Center).
+  statusChangedAt     DateTime       @default(now()) @db.Timestamptz(3)
+  /// Start of a connection incident: the time when a `connected` instance went to `connecting` or
+  /// `disconnected`. `null` when no incident is open.
+  disconnectedSince   DateTime?      @db.Timestamptz(3)
+  /// Time of the "disconnected" alert of the open incident. The monitor clears it with the recovery message.
+  disconnectAlertedAt DateTime?      @db.Timestamptz(3)
+  /// Time of the last connection state from the provider: the `occurredAt` of a webhook event, or the time of
+  /// a reconciliation read. Older events are stale and change nothing.
+  providerEventAt     DateTime?      @db.Timestamptz(3)
+  /// Time when the provider confirmed the instance. `null`: the next connect creates it in the provider.
+  providerCreatedAt   DateTime?      @db.Timestamptz(3)
 
   tenant        Tenant         @relation(fields: [tenantId], references: [id])
   bot           Bot?           @relation(fields: [botId], references: [id], onDelete: SetNull)
@@ -199,6 +211,8 @@ model Instance {
   /// This partial index is also the `(tenantId, externalRef)` index of the plan.
   @@unique([tenantId, externalRef], map: "instances_tenantId_externalRef_active_key", where: raw("\"deletedAt\" IS NULL"))
   @@index([botId])
+  /// The connection monitor reads the instances by status and by the time of the status.
+  @@index([status, statusChangedAt])
   @@map("instances")
 }
 
