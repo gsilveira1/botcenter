@@ -130,6 +130,19 @@ export class MessageStatusHandler implements InboundHandler<'message.status'>, O
 - An event without a handler is logged at `warn`, counted, and the job ends.
 - The inbound worker does not order the events of a conversation. Use `DistributedLockService` in the handler.
 
+## Call a client URL
+
+Inject `EXTERNAL_HTTP` (the frozen port, `ExternalHttpPort.postJson`) for a URL that a client supplies. `ExternalHttpModule` is global and comes with `WebhooksApiModule` and `WebhooksWorkerModule`.
+
+- The SSRF guard resolves the host one time, refuses the URL when one address is private, loopback, link-local, CGNAT, multicast, reserved, IPv4-mapped to one of these, or a cloud metadata address, and the connection uses only the checked addresses (no DNS rebinding).
+- HTTPS only when `NODE_ENV=production`. No redirects (a 3xx is a normal response). The time limit is at most 30 s. The response limit is `EXTERNAL_HTTP_MAX_RESPONSE_BYTES`. The `User-Agent` is fixed.
+- The port throws `ExternalHttpError` only (`forbidden_address`, `timeout`, `network`, `response_too_large`).
+- Tests: replace `DNS_RESOLVER` with `fakeDns()` from `test/support/webhooks.ts`. Set `EXTERNAL_HTTP_ALLOW_PRIVATE=true` (refused in production) to call a local receiver (`TestReceiver` in `test/support/receiver.ts`).
+
+## Add a maintenance task
+
+Register a `MaintenanceTask` (`name`, `everyMs`, `run(now)`) with `MaintenanceTaskRegistry.register(this)` in `onModuleInit`. Add the name to `MaintenanceJob['task']` in `queue-names.ts`. The maintenance worker upserts one BullMQ job scheduler for each task (the scheduler id is the task name) and removes the schedulers of old tasks. `run` must be idempotent and safe when two runs overlap. Use `BatchPurger.deleteWhere` for deletes (batches with `FOR UPDATE SKIP LOCKED`) and `IncidentService.update` for an alert with a recovery message.
+
 ## Tests
 
 - Unit tests: `src/**/*.spec.ts`. Use `testEnv()` from `test/support/env.ts` for a valid environment.
