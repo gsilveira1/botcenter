@@ -26,3 +26,7 @@ export function ciImage(name: string): string {
   if (!match) throw new Error(`no ${name} in .github/workflows/ci.yml`);
   return match[1]!;
 }
+
+/** Alpine for the iptables test of the host firewall script (Renovate updates the digest). */
+export const ALPINE_IMAGE =
+  'alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8';

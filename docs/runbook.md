@@ -179,8 +179,11 @@ Optional: SOPS and age. Keep the env files encrypted in a private infrastructure
    ```sh
    sudo systemctl enable --now botcenter-backup.timer botcenter-restore-test.timer \
      botcenter-disk-check.timer botcenter-evolution-retention.timer botcenter-cloudflare-firewall.timer
+   sudo systemctl enable botcenter-firewall-boot.service
    systemctl list-timers 'botcenter-*'
    ```
+
+   `botcenter-firewall-boot.service` applies the `DOCKER-USER` rules after each boot, before `docker.service` starts. It has no network, so it uses the last Cloudflare ranges of the Caddy snippet. Set `PUBLIC_INTERFACE` in `firewall.env` (Hetzner: `eth0`).
 
 10. Run the first backup and the first restore test by hand:
 
@@ -389,9 +392,7 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 
 1. Check: `test -f /var/run/reboot-required && cat /var/run/reboot-required.pkgs`.
 2. If a reboot is necessary, select a period with low traffic.
-3. Reboot: `sudo reboot`. Docker starts the stack again (`restart: unless-stopped`). The firewall timer applies the `DOCKER-USER` rules 30 seconds after the boot.
-
-   CAUTION: Between the start of Docker and the firewall timer, port 443 accepts every source. The Hetzner Cloud Firewall (backend `hcloud`) closes this gap.
+3. Reboot: `sudo reboot`. `botcenter-firewall-boot.service` applies the `DOCKER-USER` rules with the last known Cloudflare ranges before Docker starts. Docker then starts the stack again (`restart: unless-stopped`). The firewall timer gets the current ranges 30 seconds after the boot.
 
 4. Make sure that `bc ps` shows every service healthy and that `sudo iptables -S DOCKER-USER` shows the jumps to `BOTCENTER-CF` and `BOTCENTER-EVO`.
 
@@ -494,6 +495,7 @@ Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_backup_las
 | `botcenter-disk-check.timer` | every 15 minutes | `infra/backup/disk-check.sh` |
 | `botcenter-evolution-retention.timer` | daily 04:30 UTC | `infra/host/evolution-retention.sh` |
 | `botcenter-cloudflare-firewall.timer` | 30 s after boot, then every 6 hours | `infra/host/firewall-cloudflare.sh` |
+| `botcenter-firewall-boot.service` (no timer) | each boot, before `docker.service` | `infra/host/firewall-cloudflare.sh --offline` |
 
 ### 18.3 Ports
 

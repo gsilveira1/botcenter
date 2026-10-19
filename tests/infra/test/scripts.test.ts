@@ -233,6 +233,65 @@ describe('firewall-cloudflare.sh --dry-run', () => {
     expect(result.stdout).toContain('--ctorigdstport 80 -j DROP');
   });
 
+  it('--offline reads the last known ranges from the Caddy snippet, without network', async () => {
+    const env = lists(v4, v6);
+    writeFileSync(
+      env.CADDY_SNIPPET,
+      'trusted_proxies static 10.0.0.0/16 10.1.0.0/16 10.2.0.0/16 10.3.0.0/16 10.4.0.0/16 10.5.0.0/16 10.6.0.0/16 10.7.0.0/16 10.8.0.0/16 10.9.0.0/16 2001:db8:0::/48 2001:db8:1::/48 2001:db8:2::/48 2001:db8:3::/48 2001:db8:4::/48\n',
+    );
+    const result = await run(
+      repoPath('infra/host/firewall-cloudflare.sh'),
+      ['--dry-run', '--offline'],
+      {
+        ...env,
+        // No fetch in the offline mode: these URLs do not exist.
+        CF_IPS_V4_URL: 'file:///nonexistent/v4',
+        CF_IPS_V6_URL: 'file:///nonexistent/v6',
+      },
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('iptables -N DOCKER-USER');
+    expect(result.stdout).toContain(
+      'iptables -A BOTCENTER-CF -s 10.9.0.0/16 -p tcp -m conntrack --ctorigdstport 443 -j RETURN',
+    );
+    expect(result.stdout).toContain(
+      'ip6tables -A BOTCENTER-CF -s 2001:db8:4::/48 -p tcp -m conntrack --ctorigdstport 443 -j RETURN',
+    );
+    expect(result.stdout).toContain('iptables -N BOTCENTER-EVO');
+    // The offline mode does not write the snippet.
+    expect(result.stdout).not.toContain('trusted_proxies static');
+  });
+
+  it('--offline falls back to the repository snippet when the host copy is missing', async () => {
+    const env = lists(v4, v6);
+    const result = await run(
+      repoPath('infra/host/firewall-cloudflare.sh'),
+      ['--dry-run', '--offline'],
+      {
+        ...env,
+        CADDY_SNIPPET: '/nonexistent/cloudflare-ips.caddy',
+      },
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain(
+      'iptables -A BOTCENTER-CF -s 173.245.48.0/20 -p tcp -m conntrack --ctorigdstport 443 -j RETURN',
+    );
+  });
+
+  it('applies the rules before Docker starts after a boot (systemd unit)', () => {
+    const unit = readFileSync(
+      repoPath('infra/host/systemd/botcenter-firewall-boot.service'),
+      'utf8',
+    );
+    expect(unit).toMatch(/^Before=.*\bdocker\.service\b/m);
+    expect(unit).toMatch(/^WantedBy=docker\.service$/m);
+    expect(unit).toMatch(/^DefaultDependencies=no$/m);
+    expect(unit).toMatch(
+      /^ExecStart=\/opt\/botcenter\/infra\/host\/firewall-cloudflare\.sh --offline$/m,
+    );
+    expect(unit).toMatch(/^RemainAfterExit=yes$/m);
+  });
+
   it('keeps the current rules when a list has a bad line or too few ranges', async () => {
     const bad = await run(
       repoPath('infra/host/firewall-cloudflare.sh'),

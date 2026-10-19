@@ -7,6 +7,13 @@
 #   sudo infra/host/firewall-cloudflare.sh                         # backends from FIREWALL_BACKENDS
 #   sudo infra/host/firewall-cloudflare.sh --backends docker-user,hcloud --allow-http
 #   infra/host/firewall-cloudflare.sh --dry-run                    # prints the rules, changes nothing
+#   sudo infra/host/firewall-cloudflare.sh --offline               # boot: before docker.service
+#
+# --offline (systemd unit botcenter-firewall-boot.service, before docker.service): no network. The
+# ranges come from the last written Caddy snippet (CADDY_SNIPPET), or from the repository copy
+# (infra/caddy/cloudflare-ips.caddy). Only the docker-user backend runs. The script makes the chain
+# DOCKER-USER when Docker did not make it yet; dockerd keeps the chain and its rules at start. So port 443
+# never accepts every source after a boot. PUBLIC_INTERFACE must be set (no route exists yet).
 #
 # Backends:
 #   docker-user  iptables and ip6tables rules in the DOCKER-USER chain. Docker publishes the ports of
@@ -41,6 +48,9 @@ CF_IPS_V6_URL="${CF_IPS_V6_URL:-https://www.cloudflare.com/ips-v6}"
 BACKENDS="${FIREWALL_BACKENDS:-docker-user}"
 ALLOW_HTTP="${ALLOW_HTTP:-false}"
 DRY_RUN=false
+OFFLINE=false
+BRIDGE_FAILED=false
+REPO_SNIPPET="$SCRIPT_DIR/../caddy/cloudflare-ips.caddy"
 CHAIN=BOTCENTER-CF
 EVO_CHAIN=BOTCENTER-EVO
 EVOLUTION_SOURCE_IPS="${EVOLUTION_SOURCE_IPS-10.203.1.30,10.203.2.30}"
@@ -61,8 +71,12 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       shift
       ;;
+    --offline)
+      OFFLINE=true
+      shift
+      ;;
     -h | --help)
-      sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -87,11 +101,17 @@ fi
 
 # fetch_ranges URL FAMILY MINIMUM : prints the validated CIDR lines.
 fetch_ranges() {
-  local url="$1" family="$2" minimum="$3" body line count=0 pattern
+  local url="$1" family="$2" minimum="$3" body
   body="$(curl -fsS -m 20 --retry 3 "$url")" || {
     log_error "cannot fetch $url"
     return 1
   }
+  validate_ranges "$url" "$family" "$minimum" <<<"$body"
+}
+
+# validate_ranges SOURCE FAMILY MINIMUM : reads CIDR lines on stdin and prints the valid lines.
+validate_ranges() {
+  local source="$1" family="$2" minimum="$3" line count=0 pattern
   if [[ "$family" == 4 ]]; then
     pattern='^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$'
   else
@@ -101,20 +121,41 @@ fetch_ranges() {
     line="${line//$'\r'/}"
     [[ -z "$line" ]] && continue
     if [[ ! "$line" =~ $pattern ]]; then
-      log_error "the line '$line' of $url is not an IPv${family} CIDR"
+      log_error "the line '$line' of $source is not an IPv${family} CIDR"
       return 1
     fi
     printf '%s\n' "$line"
     count=$((count + 1))
-  done <<<"$body"
+  done
   if ((count < minimum)); then
-    log_error "$url has only $count ranges (minimum $minimum)"
+    log_error "$source has only $count ranges (minimum $minimum)"
     return 1
   fi
 }
 
-v4="$(fetch_ranges "$CF_IPS_V4_URL" 4 10)"
-v6="$(fetch_ranges "$CF_IPS_V6_URL" 6 5)"
+# snippet_ranges FILE FAMILY : prints the ranges of one family from a `trusted_proxies static` snippet.
+snippet_ranges() {
+  local file="$1" family="$2"
+  sed -n 's/^trusted_proxies static //p' "$file" | tr ' ' '\n' | if [[ "$family" == 4 ]]; then
+    grep -v ':' || true
+  else
+    grep ':' || true
+  fi
+}
+
+if [[ "$OFFLINE" == true ]]; then
+  snippet="${CADDY_SNIPPET:-}"
+  if [[ -z "$snippet" || ! -r "$snippet" ]]; then
+    log "no readable host snippet (${snippet:-CADDY_SNIPPET not set}); use the repository copy $REPO_SNIPPET"
+    snippet="$REPO_SNIPPET"
+  fi
+  v4="$(snippet_ranges "$snippet" 4 | validate_ranges "$snippet" 4 10)"
+  v6="$(snippet_ranges "$snippet" 6 | validate_ranges "$snippet" 6 5)"
+  BACKENDS=docker-user
+else
+  v4="$(fetch_ranges "$CF_IPS_V4_URL" 4 10)"
+  v6="$(fetch_ranges "$CF_IPS_V6_URL" 6 5)"
+fi
 log "Cloudflare ranges: $(wc -l <<<"$v4") IPv4, $(wc -l <<<"$v6") IPv6; ports: ${ports[*]}"
 
 # remove_chain CMD NAME : removes every jump to the chain NAME from DOCKER-USER (also the jumps with a
@@ -158,14 +199,20 @@ apply_docker_user() {
   rules+=("-A $CHAIN -j RETURN")
 
   if [[ "$DRY_RUN" == true ]]; then
+    [[ "$OFFLINE" == true ]] && printf '%s %s\n' "$cmd" "-N DOCKER-USER"
     printf '%s %s\n' "$cmd" "-N $CHAIN" "$cmd" "-F $CHAIN"
     printf "$cmd %s\n" "${rules[@]}"
     printf '%s %s\n' "$cmd" "-I DOCKER-USER 1 -j $CHAIN"
     return 0
   fi
   if ! "$cmd" -n -L DOCKER-USER >/dev/null 2>&1; then
-    log_error "$cmd has no DOCKER-USER chain. Start Docker first."
-    return 1
+    if [[ "$OFFLINE" != true ]]; then
+      log_error "$cmd has no DOCKER-USER chain. Start Docker first."
+      return 1
+    fi
+    # Before docker.service: make the chain. dockerd keeps it and adds the jump from FORWARD.
+    "$cmd" -N DOCKER-USER
+    log "$cmd: made the chain DOCKER-USER before Docker"
   fi
   # Build the rules in a new chain, jump to it, remove the old chain, then rename the new chain.
   # The traffic never passes an empty or a half-built chain.
@@ -225,7 +272,6 @@ apply_evolution_egress() {
     printf 'iptables %s\n' "-N $EVO_CHAIN" "-F $EVO_CHAIN" "${rules[@]}" "${jumps[@]}"
     return 0
   fi
-  ensure_bridge_netfilter || return 1
   local new="${EVO_CHAIN}-NEW" rule
   remove_chain iptables "$new"
   iptables -N "$new"
@@ -240,6 +286,11 @@ apply_evolution_egress() {
   remove_chain iptables "$EVO_CHAIN"
   iptables -E "$new" "$EVO_CHAIN"
   log "iptables: chain $EVO_CHAIN has ${#rules[@]} rules for the sources $(tr '\n' ' ' <<<"$sources")"
+  # The chain also works without br_netfilter for the routed traffic (the metadata service, the other
+  # networks). Only the traffic inside one bridge needs it, so the script continues and exits 1 at the end.
+  if ! ensure_bridge_netfilter; then
+    BRIDGE_FAILED=true
+  fi
 }
 
 # The rules of BOTCENTER-EVO see the traffic between two containers of one bridge network only when
@@ -254,7 +305,10 @@ ensure_bridge_netfilter() {
     return 1
   fi
   if [[ "$(<"$sysctl_file")" != 1 ]]; then
-    sysctl -q -w net.bridge.bridge-nf-call-iptables=1
+    if ! sysctl -q -w net.bridge.bridge-nf-call-iptables=1; then
+      log_error "cannot set net.bridge.bridge-nf-call-iptables=1"
+      return 1
+    fi
     log "set net.bridge.bridge-nf-call-iptables=1"
   fi
 }
@@ -333,7 +387,10 @@ IFS=',' read -r -a backend_list <<<"$BACKENDS"
 for backend in "${backend_list[@]}"; do
   case "$backend" in
     docker-user)
-      [[ "$DRY_RUN" == true ]] || require_commands iptables ip6tables ip
+      if [[ "$DRY_RUN" != true ]]; then
+        require_commands iptables ip6tables
+        [[ -n "${PUBLIC_INTERFACE:-}" ]] || require_commands ip
+      fi
       apply_docker_user iptables "$v4"
       apply_docker_user ip6tables "$v6"
       apply_evolution_egress
@@ -345,5 +402,11 @@ for backend in "${backend_list[@]}"; do
       ;;
   esac
 done
-update_caddy_snippet
+if [[ "$OFFLINE" != true ]]; then
+  update_caddy_snippet
+fi
+if [[ "$BRIDGE_FAILED" == true ]]; then
+  log_error "the rules are applied, but net.bridge.bridge-nf-call-iptables is not 1 (see infra/host/bootstrap.sh)"
+  exit 1
+fi
 log "done"
