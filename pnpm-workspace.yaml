@@ -16,3 +16,5 @@ onlyBuiltDependencies:
 ignoredBuiltDependencies:
   - cpu-features
   - ssh2
+  # Optional native speedup of msgpackr (BullMQ). The pure JavaScript fallback works.
+  - msgpackr-extract
