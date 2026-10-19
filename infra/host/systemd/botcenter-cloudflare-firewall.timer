@@ -1,0 +1,11 @@
+[Unit]
+Description=Bot Center: refresh the Cloudflare firewall rules after each boot and every 6 hours
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=6h
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
