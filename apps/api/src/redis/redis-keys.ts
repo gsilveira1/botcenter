@@ -9,4 +9,7 @@ export const redisKeys = {
   quota: (name: string, subject: string, window: string) => `bc:quota:${name}:${subject}:${window}`,
   lock: (name: string) => `bc:lock:${name}`,
   inboundDedupe: (dedupeKey: string) => `bc:dedupe:inbound:${dedupeKey}`,
+  /** Hot state of one conversation. `contactKey` is a hash of the contact phone, never the phone. */
+  conversation: (instanceId: string, contactKey: string) =>
+    `bc:conversation:${instanceId}:${contactKey}`,
 } as const;
