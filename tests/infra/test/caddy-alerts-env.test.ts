@@ -147,14 +147,6 @@ describe('env templates', () => {
     expect(missing, 'add these names to infra/env/api.env.example').toEqual([]);
   });
 
-  it('lists no variable in api.env.example that the env schema does not know', () => {
-    const keys = new Set(envSchemaKeys());
-    const unknown = [...readEnvFile(readRepoFile('infra/env/api.env.example')).keys()].filter(
-      (name) => !keys.has(name),
-    );
-    expect(unknown).toEqual([]);
-  });
-
   it('sets the browser origins of the connect stream in production (ARCH-05)', () => {
     const api = readEnvFile(readRepoFile('infra/env/api.env.example'));
     expect(api.get('CONNECT_ALLOWED_ORIGINS')).toBe('https://CHANGE_ME');

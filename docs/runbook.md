@@ -540,6 +540,9 @@ The fixed addresses are in `infra/compose/compose.prod.yml` (subnets `10.203.1.0
 | `OUTBOUND_WARMUP_START_PERCENT` | `20` | Send rate on the first day of the warm-up, in percent of the full rate. |
 | `MEDIA_UPLOAD_URL_TTL_SECONDS` | `900` | Validity of the upload URL of `POST /v1/media` (maximum 3600). |
 | `MEDIA_SEND_URL_TTL_SECONDS` | `900` | Validity of the download URL that the Evolution API gets for a media message. |
+| `INBOUND_MEDIA_DOWNLOAD_CONCURRENCY` | `2` | Inbound media downloads of one worker at the same time (maximum 10; about 60 MiB each). |
+| `BOT_INBOUND_LIMIT_PER_MINUTE` | `30` | Messages of one contact on one instance in one minute that the bot answers. The worker stores the others. |
+| `BOT_MAX_TIMEOUTS_IN_ROW` | `3` | State timeouts in a row without an inbound message. After the last one, no timer starts. |
 | `EXTERNAL_HTTP_ALLOW_PRIVATE` | `false` | Test and development only. The API refuses to start with `true` in production. |
 | `EXTERNAL_HTTP_MAX_RESPONSE_BYTES` | `1048576` | Maximum response body of an external HTTP call (maximum 16 MiB). |
 | `OUTBOX_DISPATCH_INTERVAL_MS` | `1000` | Pause of the outbox dispatcher when no event waits. |
