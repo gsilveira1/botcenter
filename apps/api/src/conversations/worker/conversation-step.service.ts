@@ -384,7 +384,8 @@ export class ConversationStepService {
       { err: error, conversation_id: conversationId },
       'bot data error; the input is skipped',
     );
-    await this.alerts.notify({
+    // ARCH-20: the caller holds the conversation lock; a slow Discord must not hold it.
+    void this.alerts.notify({
       severity: 'warning',
       title: 'Bot data error in a conversation step',
       details: { tenant_id: instance.tenantId, conversation_id: conversationId, error: error.name },

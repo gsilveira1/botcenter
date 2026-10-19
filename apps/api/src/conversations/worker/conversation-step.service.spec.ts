@@ -201,6 +201,14 @@ describe('ConversationStepService.applyMessage', () => {
     );
   });
 
+  it('does not wait for a slow alert of a data error while it holds the lock (ARCH-20)', async () => {
+    const { service, writer, definitions, alerts } = build(record());
+    alerts.notify.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+    definitions.version.mockRejectedValueOnce(new BotDataError('missing version'));
+    await expect(service.applyMessage(instance, message('Oi'))).resolves.toEqual([]);
+    expect(writer.consumeOnly).toHaveBeenCalled();
+  });
+
   it('reloads from PostgreSQL and runs the engine again after a write conflict', async () => {
     const { service, writer, loader, cache, afterCommit } = build(record());
     writer.write.mockRejectedValueOnce(new WriteConflictError('version changed'));

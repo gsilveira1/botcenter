@@ -44,7 +44,8 @@ export class EngineDiagnosticsReporter {
         continue;
       }
       this.logger.error(fields, 'engine diagnostic');
-      await this.alerts.notify({
+      // ARCH-20: the step holds the conversation lock; a slow Discord must not hold it.
+      void this.alerts.notify({
         severity: 'warning',
         title: 'Bot engine error diagnostic',
         details: {
