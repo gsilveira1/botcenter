@@ -14,13 +14,25 @@ const INSTANCE_STATUSES = [
   'logged_out',
 ] as const;
 
+/** Jobs read from the head of each list when the caller ignores some job names. */
+const HEAD_JOBS = 20;
+
 /**
  * The age in seconds of the oldest job that waits for a worker (`waiting` and `prioritized`). A delayed
  * job is ready at timestamp + delay. The operational alerts use the same value as the gauge.
+ * `ignoreNames` leaves out housekeeping jobs (for example the `sweep` job of the `outbound` queue), so
+ * only the first jobs of each list are read.
  */
-export async function oldestWaitingDelaySeconds(queue: Queue, now = Date.now()): Promise<number> {
-  // The first job of each list in ascending order.
-  const firstJobs = await queue.getJobs(['waiting', 'prioritized'], 0, 0, true);
+export async function oldestWaitingDelaySeconds(
+  queue: Queue,
+  now = Date.now(),
+  ignoreNames: readonly string[] = [],
+): Promise<number> {
+  const end = ignoreNames.length > 0 ? HEAD_JOBS - 1 : 0;
+  // The first jobs of each list in ascending order.
+  const firstJobs = (await queue.getJobs(['waiting', 'prioritized'], 0, end, true)).filter(
+    (job) => !ignoreNames.includes(job.name),
+  );
   const readyAt = Math.min(now, ...firstJobs.map((job) => job.timestamp + (job.opts.delay ?? 0)));
   return Math.max(0, (now - readyAt) / 1000);
 }

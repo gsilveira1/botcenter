@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { OnModuleInit } from '@nestjs/common';
+import { OUTBOUND_SWEEP_JOB } from '../messages/outbound-job';
 import { PrismaService } from '../prisma/prisma.service';
 import { oldestWaitingDelaySeconds } from '../queues/queue-metrics.collector';
 import { QueuesService } from '../queues/queues.service';
@@ -90,7 +91,10 @@ export class OperationalAlertsTask implements MaintenanceTask, OnModuleInit {
   }
 
   async checkOutboundDelay(now: Date): Promise<Outcome> {
-    const delay = await oldestWaitingDelaySeconds(this.queues.get('outbound'), now.getTime());
+    // The sweep job of the messages slice is housekeeping, not a send: it does not count.
+    const delay = await oldestWaitingDelaySeconds(this.queues.get('outbound'), now.getTime(), [
+      OUTBOUND_SWEEP_JOB,
+    ]);
     const details = {
       delay_seconds: Math.round(delay),
       limit_seconds: OUTBOUND_DELAY_LIMIT_SECONDS,

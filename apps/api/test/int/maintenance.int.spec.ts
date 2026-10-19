@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { TestingModule } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import type { S3Client } from '@aws-sdk/client-s3';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Instance, Tenant } from '../../src/generated/prisma/client';
 import { PURGE_BATCH_SIZE } from '../../src/maintenance/batch-purger';
 import { MaintenanceTaskRegistry } from '../../src/maintenance/maintenance-task.registry';
 import { MaintenanceWorkerModule } from '../../src/maintenance/maintenance.module';
-import { MEDIA_OBJECT_STORE } from '../../src/maintenance/media-purge.task';
-import type { MediaObjectStore } from '../../src/maintenance/media-purge.task';
+import { MediaStorage, S3_CLIENT } from '../../src/media/media.storage';
 import { OperationalAlertsTask } from '../../src/maintenance/operational-alerts.task';
 import type { MaintenanceTaskName } from '../../src/queues/queue-names';
 import { QueuesService } from '../../src/queues/queues.service';
@@ -16,19 +17,6 @@ import { insertDelivery, messageStatusData } from '../support/webhooks';
 
 const DAY = 86_400_000;
 
-/** A fake object storage: it records the deleted keys and refuses the keys in `refuse`. */
-class FakeMediaStore implements MediaObjectStore {
-  readonly deleted: string[] = [];
-  readonly refuse = new Set<string>();
-
-  async deleteObjects(keys: readonly string[]): Promise<{ failedKeys: string[] }> {
-    const failedKeys = keys.filter((key) => this.refuse.has(key));
-    this.deleted.push(...keys.filter((key) => !this.refuse.has(key)));
-    return { failedKeys };
-  }
-}
-
-const store = new FakeMediaStore();
 let h: TestHarness;
 let worker: TestingModule;
 let shortTenant: Tenant;
@@ -39,7 +27,7 @@ let defaultInstance: Instance;
 beforeAll(async () => {
   h = await TestHarness.start({
     modules: [WebhooksApiModule],
-    override: (builder) => builder.overrideProvider(MEDIA_OBJECT_STORE).useValue(store),
+    minio: true,
   });
   // A scheduler of a task that no longer exists: the worker removes it at start.
   await h
@@ -216,40 +204,57 @@ describe('purge tasks', () => {
   });
 
   it('deletes old media in the object storage first, keeps a row when its key fails, and alerts', async () => {
-    const media = (tenantId: string, key: string, createdAt: Date) =>
-      h.prisma.mediaObject.create({
+    const storage = worker.get(MediaStorage, { strict: false });
+    const s3 = worker.get<S3Client>(S3_CLIENT, { strict: false });
+    const media = async (key: string, createdAt: Date, expiresAt: Date | null = null) => {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: h.minio.bucket,
+          Key: key,
+          Body: 'jpeg',
+          ContentType: 'image/jpeg',
+        }),
+      );
+      return h.prisma.mediaObject.create({
         data: {
-          tenantId,
+          tenantId: shortTenant.id,
           key,
           contentType: 'image/jpeg',
-          sizeBytes: 10,
+          sizeBytes: 4,
           direction: 'inbound',
           createdAt,
+          expiresAt,
         },
       });
-    const oldKey = `${shortTenant.id}/${randomUUID()}.jpg`;
-    const refusedKey = `${shortTenant.id}/${randomUUID()}.jpg`;
-    const freshKey = `${shortTenant.id}/${randomUUID()}.jpg`;
-    await media(shortTenant.id, oldKey, ago(8 * DAY));
-    const refused = await media(shortTenant.id, refusedKey, ago(9 * DAY));
-    await media(shortTenant.id, freshKey, ago(DAY));
-    store.refuse.add(refusedKey);
+    };
+    const key = () => `tenants/${shortTenant.id}/inbound/${randomUUID()}`;
+    const old = await media(key(), ago(8 * DAY));
+    const expired = await media(key(), ago(DAY), ago(1_000));
+    const refused = await media(key(), ago(9 * DAY));
+    const fresh = await media(key(), ago(DAY), ago(-6 * DAY));
 
+    const realDelete = storage.deleteObjects.bind(storage);
+    const spy = vi.spyOn(storage, 'deleteObjects').mockImplementationOnce(async (keys) => {
+      await realDelete(keys.filter((candidate) => candidate !== refused.key));
+      return { failedKeys: [refused.key] };
+    });
     const result = await task('purge-media-objects').run(new Date());
-    expect(result).toEqual({ deleted: 1, failed: 1 });
-    expect(store.deleted).toContain(oldKey);
-    expect(store.deleted).not.toContain(freshKey);
+    expect(result).toEqual({ deleted: 2, failed: 1 });
+    expect(await storage.head(old.key)).toBeNull();
+    expect(await storage.head(expired.key)).toBeNull();
+    expect(await storage.head(fresh.key)).not.toBeNull();
     const keys = (await h.prisma.mediaObject.findMany({ where: { tenantId: shortTenant.id } })).map(
       (row) => row.key,
     );
-    expect(keys.sort()).toEqual([refusedKey, freshKey].sort());
+    expect(keys.sort()).toEqual([refused.key, fresh.key].sort());
     expect(h.alerts.map((alert) => alert.title)).toContain(
       'Media objects not deleted from the object storage',
     );
 
-    store.refuse.clear();
+    spy.mockRestore();
     await task('purge-media-objects').run(new Date());
     expect(await h.prisma.mediaObject.findUnique({ where: { id: refused.id } })).toBeNull();
+    expect(await storage.head(refused.key)).toBeNull();
   });
 });
 
@@ -258,18 +263,28 @@ describe('operational alerts (check-alerts)', () => {
     return h.alerts.map((alert) => alert.title);
   }
 
-  it('alerts once when the outbound queue waits more than 30 s, and sends a recovery message', async () => {
+  it('alerts once when a send waits more than 30 s, ignores the sweep job, and sends a recovery message', async () => {
     const alerts = worker.get(OperationalAlertsTask);
-    const job = await h.get(QueuesService).add('outbound', 'send', {
-      tenantId: defaultTenant.id,
-      messageId: randomUUID(),
-      instanceId: defaultInstance.id,
-    });
-    const later = new Date(Date.now() + 31_000);
-    expect(await alerts.checkOutboundDelay(later)).toBe('opened');
-    expect(await alerts.checkOutboundDelay(later)).toBe('unchanged');
-    await job.remove();
-    expect(await alerts.checkOutboundDelay(later)).toBe('resolved');
+    // The worker process of the test also consumes `outbound`: a paused queue keeps the jobs waiting.
+    const queue = h.get(QueuesService).get('outbound');
+    await queue.pause();
+    try {
+      const sweep = await queue.add('sweep', {} as never);
+      const later = new Date(Date.now() + 31_000);
+      expect(await alerts.checkOutboundDelay(later)).toBe('unchanged');
+      const send = await queue.add(
+        'send',
+        { tenantId: defaultTenant.id, messageId: randomUUID(), instanceId: defaultInstance.id },
+        { priority: 10 },
+      );
+      expect(await alerts.checkOutboundDelay(later)).toBe('opened');
+      expect(await alerts.checkOutboundDelay(later)).toBe('unchanged');
+      await send.remove();
+      expect(await alerts.checkOutboundDelay(later)).toBe('resolved');
+      await sweep.remove();
+    } finally {
+      await queue.resume();
+    }
     expect(
       titles().filter(
         (title) => title.includes('Outbound queue') || title.includes('outbound queue'),
