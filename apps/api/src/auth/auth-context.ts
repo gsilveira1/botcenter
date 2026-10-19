@@ -54,6 +54,19 @@ export function allowsAllInstances(auth: AuthContext): boolean {
   return auth.instanceIds.length === 0;
 }
 
+/**
+ * Refuses a key with an instance list (403 `INSTANCE_NOT_ALLOWED`) on a route that acts for the full
+ * tenant, for example `/v1/webhooks`: the events of every instance go to the webhooks (SEC-03).
+ */
+export function assertAllInstancesAllowed(auth: AuthContext, action: string): void {
+  if (!allowsAllInstances(auth)) {
+    throw new AppError(
+      'INSTANCE_NOT_ALLOWED',
+      `An API key with an instance list cannot ${action}: it applies to every instance of the tenant`,
+    );
+  }
+}
+
 /** Route parameter: the `AuthContext` of the request. Use it only on `@RequireScope(...)` routes. */
 export const Auth = createParamDecorator(
   (_data: unknown, context: ExecutionContext): AuthContext => {

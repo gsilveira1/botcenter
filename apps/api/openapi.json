@@ -98,6 +98,7 @@
           "bots"
         ],
         "summary": "Read a bot and its current version",
+        "description": "A key with an instance list gets 403 `INSTANCE_NOT_ALLOWED` when the bot serves an instance outside that list.",
         "security": [
           {
             "apiKey": []
@@ -203,7 +204,7 @@
           "bots"
         ],
         "summary": "Create a bot or publish a new version of its definition",
-        "description": "`{id}` is a slug that the client chooses. A new version is published only when the definition changed. Open conversations stay on their version; new conversations use the new version. `instance_ids` is the full list of instances that the bot serves (an instance has at most one bot; an instance of another bot moves to this bot). A definition that is not valid gives 422 `BOT_DEFINITION_INVALID` with one error for each path.",
+        "description": "`{id}` is a slug that the client chooses. A new version is published only when the definition changed. Open conversations stay on their version; new conversations use the new version. `instance_ids` is the full list of instances that the bot serves (an instance has at most one bot; an instance of another bot moves to this bot). A definition that is not valid gives 422 `BOT_DEFINITION_INVALID` with one error for each path. A key with an instance list gets 403 `INSTANCE_NOT_ALLOWED` when the bot serves an instance outside that list.",
         "security": [
           {
             "apiKey": []

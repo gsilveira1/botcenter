@@ -26,7 +26,8 @@ export class BotsController {
       'changed. Open conversations stay on their version; new conversations use the new version. ' +
       '`instance_ids` is the full list of instances that the bot serves (an instance has at most one ' +
       'bot; an instance of another bot moves to this bot). A definition that is not valid gives 422 ' +
-      '`BOT_DEFINITION_INVALID` with one error for each path.',
+      '`BOT_DEFINITION_INVALID` with one error for each path. A key with an instance list gets 403 ' +
+      '`INSTANCE_NOT_ALLOWED` when the bot serves an instance outside that list.',
   })
   @ApiResponse(200, { description: 'The bot with its current version', schema: BotResponseDto })
   @ApiResponse(422, {
@@ -39,7 +40,12 @@ export class BotsController {
 
   @Get(':id')
   @RequireScope('bots:write')
-  @ApiOperation({ summary: 'Read a bot and its current version' })
+  @ApiOperation({
+    summary: 'Read a bot and its current version',
+    description:
+      'A key with an instance list gets 403 `INSTANCE_NOT_ALLOWED` when the bot serves an instance ' +
+      'outside that list.',
+  })
   @ApiResponse(200, { description: 'The bot with its current version', schema: BotResponseDto })
   get(@Auth() auth: AuthContext, @Param() params: BotParams) {
     return this.bots.get(auth, params.id);

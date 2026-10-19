@@ -50,6 +50,13 @@ export class BotsService {
       const tx = scoped as unknown as TransactionClient;
       // Serializes the writes of one bot: the version numbers and the bindings stay consistent.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`bot:${auth.tenantId}:${slug}`}, 0))`;
+      const current = await tx.bot.findUnique({
+        where: { tenantId_slug: { tenantId: auth.tenantId, slug } },
+        select: { id: true },
+      });
+      if (current) {
+        await this.assertBotInKeyScope(tx, auth, current.id);
+      }
       const published = await this.publish(tx, auth.tenantId, slug, body.name, definition);
       const change = await bindInstances(tx, auth, published.bot.id, body.instance_ids);
       await this.recordAudit(tx, auth, published, change);
@@ -66,7 +73,37 @@ export class BotsService {
     if (!bot) {
       throw notFound('Bot');
     }
+    await this.assertBotInKeyScope(this.prisma, auth, bot.id);
     return this.toResponse(auth, bot);
+  }
+
+  /**
+   * SEC-03: a key with an instance list can read or change a bot only when the bot serves no instance
+   * outside that list. Else the key could publish a definition (for example an `external` condition to
+   * its own URL) for the users of another instance. 403 `INSTANCE_NOT_ALLOWED`.
+   */
+  private async assertBotInKeyScope(
+    client: TransactionClient,
+    auth: AuthContext,
+    botId: string,
+  ): Promise<void> {
+    if (allowsAllInstances(auth)) {
+      return;
+    }
+    const outside = await client.instance.count({
+      where: {
+        tenantId: auth.tenantId,
+        botId,
+        deletedAt: null,
+        id: { notIn: auth.instanceIds },
+      },
+    });
+    if (outside > 0) {
+      throw new AppError(
+        'INSTANCE_NOT_ALLOWED',
+        'The bot serves an instance that the API key cannot use',
+      );
+    }
   }
 
   /** The contract schema and the engine rules. Each issue becomes one field error with a dot path. */
