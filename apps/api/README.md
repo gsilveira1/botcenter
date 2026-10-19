@@ -20,6 +20,8 @@ pnpm --filter @botcenter/api admin:key:create -- --tenant personallife --name ba
 ```
 
 The admin scripts run from `dist` (`node dist/scripts/admin.js <command>`). Run `node dist/scripts/admin.js --help` for the commands. Each command writes an audit row and prints JSON. `key:create` and `key:rotate` print the full key one time.
+`raw-events:replay --id <id>` sends a stored provider event to the `inbound` queue again, without the dedupe check (use it after a failed or lost inbound job).
+`instances:resync-webhook` writes the webhook URL and `EVOLUTION_WEBHOOK_SECRET` again in the provider for each active instance. Run it after a change of the secret. The exit code is 1 when the provider refuses one instance; the JSON lists the failed instances.
 
 Container memory: set `NODE_OPTIONS=--max-old-space-size=384` for the API (512 MB limit) and `--max-old-space-size=768` for the worker (1 GB limit).
 

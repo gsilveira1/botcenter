@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { AdminOperationsService } from '../../src/admin/admin-operations.service';
 import { AdminService } from '../../src/admin/admin.service';
 import { ApiKeyService } from '../../src/auth/api-key.service';
 import {
@@ -86,6 +87,7 @@ describe('API key authentication', () => {
       h.get(AuditService),
       keys,
       h.get(TenantsService),
+      {} as AdminOperationsService,
     );
     // A request misses the cache and reads the row. The operator revokes the key before the request
     // writes the cache entry.

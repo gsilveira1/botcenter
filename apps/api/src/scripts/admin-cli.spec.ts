@@ -11,6 +11,8 @@ function admin() {
     listKeys: vi.fn(async () => []),
     revokeKey: vi.fn(async () => ({ id: 'k' })),
     rotateKey: vi.fn(async () => ({ key: 'bc_live_y', apiKey: { id: 'k2' }, replaces: 'old' })),
+    replayRawEvent: vi.fn(async (id: string) => ({ raw_event_id: id, enqueued: 1, jobs: ['j'] })),
+    resyncInstanceWebhooks: vi.fn(async () => ({ total: 2, succeeded: 1, failed: ['i2'] })),
   };
 }
 
@@ -97,5 +99,15 @@ describe('runAdminCli', () => {
     failing.revokeKey.mockRejectedValueOnce(new AppError('NOT_FOUND', 'API key not found'));
     const result = await run(['key:revoke', '--key', 'x'], failing);
     expect(result).toMatchObject({ code: 1, err: 'NOT_FOUND: API key not found' });
+  });
+
+  it('runs the replay and the webhook resync, with exit code 1 for a partial failure', async () => {
+    const replay = await run(['raw-events:replay', '--id', 'r1']);
+    expect(replay.code).toBe(0);
+    expect(replay.service.replayRawEvent).toHaveBeenCalledWith('r1', 'cli:ana');
+    const resync = await run(['instances:resync-webhook']);
+    expect(resync.code).toBe(1);
+    expect(JSON.parse(resync.out)).toMatchObject({ failed: ['i2'] });
+    expect((await run(['raw-events:replay'])).code).toBe(2);
   });
 });

@@ -12,6 +12,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { TransactionClient } from '../prisma/prisma.service';
 import { AuditService } from '../services/audit.service';
 import { TenantsService } from '../services/tenants.service';
+import { AdminOperationsService } from './admin-operations.service';
+import type { RawEventReplay, WebhookResync } from './admin-operations.service';
 
 /** Attempts to delete the cache entry of a revoked key, and the delay before each retry. */
 const REVOKE_CACHE_ATTEMPTS = 3;
@@ -89,7 +91,18 @@ export class AdminService {
     private readonly audit: AuditService,
     private readonly keys: ApiKeyService,
     private readonly tenants: TenantsService,
+    private readonly operations: AdminOperationsService,
   ) {}
+
+  /** `raw-events:replay`: see `AdminOperationsService.replayRawEvent`. */
+  replayRawEvent(id: string, actor: string): Promise<RawEventReplay> {
+    return this.operations.replayRawEvent(id, actor);
+  }
+
+  /** `instances:resync-webhook`: see `AdminOperationsService.resyncInstanceWebhooks`. */
+  resyncInstanceWebhooks(actor: string): Promise<WebhookResync> {
+    return this.operations.resyncInstanceWebhooks(actor);
+  }
 
   async createTenant(input: CreateTenantInput, actor: string): Promise<Tenant> {
     if (!input.name.trim()) {
