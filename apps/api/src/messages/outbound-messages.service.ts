@@ -1,4 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { AppError } from '../common/errors/app-error';
+import { ENV } from '../config/env';
+import type { AppEnv } from '../config/env';
 import type { Prisma } from '../generated/prisma/client';
 import { getLogger } from '../logging/logger';
 import { MetricsService } from '../metrics/metrics.service';
@@ -7,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { TransactionClient } from '../prisma/prisma.service';
 import { QueuesService } from '../queues/queues.service';
 import { AlertService } from '../services/alert.service';
+import { OutboxService } from '../services/outbox.service';
 import { MessageQuota } from './message-quota';
 import { OUTBOUND_SEND_JOB, outboundJobOptions } from './outbound-job';
 import type { OutboundEnqueue } from './outbound-job';
@@ -44,11 +48,18 @@ export class OutboundMessagesService implements OutboundMessagesPort {
     private readonly quota: MessageQuota,
     private readonly metrics: MetricsService,
     private readonly alerts: AlertService,
+    private readonly outbox: OutboxService,
+    @Inject(ENV) private readonly env: AppEnv,
   ) {}
 
   /**
    * Writes the row in the transaction of the caller. A `bulk` message consumes the daily quota and can
    * throw 429 `QUOTA_EXCEEDED` (the caller transaction then rolls back). A `reply` does not use the quota.
+   *
+   * When the instance has `OUTBOUND_MAX_QUEUED_PER_INSTANCE` queued rows (SEC-04), the reply is refused:
+   * the row is written as `failed` (`instance_queue_full`) with its `message.status` event, a warning
+   * is logged, and `dispatch` does not enqueue it. It does not throw, so the conversation step of the
+   * caller still commits (a throw would roll back the step and repeat it for ever).
    */
   async createInTx(
     tx: TransactionClient,
@@ -57,8 +68,70 @@ export class OutboundMessagesService implements OutboundMessagesPort {
     if (input.priority === 'bulk') {
       await this.quota.consume(input.tenantId);
     }
+    if (await this.queueIsFull(tx, input.instanceId)) {
+      return this.refuseInTx(tx, input);
+    }
     const row = await tx.message.create({ data: outboundMessageData(input), select: { id: true } });
     this.metrics.messagesTotal.inc({ status: 'queued' });
+    return { messageId: row.id };
+  }
+
+  /** `POST /v1/messages`: 429 `QUOTA_EXCEEDED` when the instance has too many queued rows (SEC-04). */
+  async assertQueueBelowLimit(tenantId: string, instanceId: string): Promise<void> {
+    const db = this.prisma.forTenant(tenantId) as unknown as TransactionClient;
+    if (await this.queueIsFull(db, instanceId)) {
+      this.metrics.rateLimitDeniedTotal.inc({ scope: 'instance_queue' });
+      throw new AppError(
+        'QUOTA_EXCEEDED',
+        `The instance has ${this.env.OUTBOUND_MAX_QUEUED_PER_INSTANCE} queued messages. Retry later.`,
+        { headers: { 'Retry-After': '60' } },
+      );
+    }
+  }
+
+  /** True when the instance has the maximum of queued rows (partial index `messages_queued_idx`). */
+  private async queueIsFull(db: TransactionClient, instanceId: string): Promise<boolean> {
+    const limit = this.env.OUTBOUND_MAX_QUEUED_PER_INSTANCE;
+    const queued = await db.message.count({
+      where: { instanceId, status: 'queued' },
+      take: limit,
+    });
+    return queued >= limit;
+  }
+
+  private async refuseInTx(
+    tx: TransactionClient,
+    input: OutboundMessageInput,
+  ): Promise<{ messageId: string }> {
+    const reason = 'instance_queue_full';
+    const row = await tx.message.create({
+      data: { ...outboundMessageData(input), status: 'failed', failureReason: reason },
+      select: { id: true, instance: { select: { externalRef: true } } },
+    });
+    await this.outbox.enqueue(tx, {
+      tenantId: input.tenantId,
+      type: 'message.status',
+      payload: {
+        instance_id: input.instanceId,
+        external_ref: row.instance.externalRef,
+        message_id: row.id,
+        status: 'failed',
+        failure_reason: reason,
+      },
+    });
+    this.metrics.messagesTotal.inc({ status: 'failed' });
+    this.metrics.instanceMessagesTotal.inc({ instance_id: input.instanceId, status: 'failed' });
+    this.metrics.rateLimitDeniedTotal.inc({ scope: 'instance_queue' });
+    this.logger.warn(
+      { limit: this.env.OUTBOUND_MAX_QUEUED_PER_INSTANCE, priority: input.priority },
+      'outbound queue of the instance is full; the reply is refused',
+    );
+    void this.alerts.notify({
+      severity: 'warning',
+      title: 'Outbound queue of an instance is full; bot replies are refused',
+      details: { instance_id: input.instanceId },
+      dedupeKey: `outbound:queue-full:${input.instanceId}`,
+    });
     return { messageId: row.id };
   }
 

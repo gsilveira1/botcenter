@@ -136,6 +136,11 @@ export const EnvSchema = z.object({
   OUTBOUND_WARMUP_DAYS: z.coerce.number().int().min(0).max(90).default(7),
   /** Warm-up: the send rate on the first day, in percent of the full rate. The rate grows linearly. */
   OUTBOUND_WARMUP_START_PERCENT: positiveInt.max(100).default(20),
+  /**
+   * Maximum `queued` outbound rows of one instance (SEC-04). Above it, `POST /v1/messages` answers 429
+   * `QUOTA_EXCEEDED` and a new bot reply is written as `failed` (`instance_queue_full`).
+   */
+  OUTBOUND_MAX_QUEUED_PER_INSTANCE: positiveInt.max(1_000_000).default(1_000),
   /** Validity of the pre-signed upload URL of `POST /v1/media`. */
   MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(900),
   /** Validity of the pre-signed download URL that the provider gets for a media message. */
