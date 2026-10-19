@@ -13,6 +13,11 @@
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
+    "./fixtures": {
+      "types": "./dist/fixtures/personal-trainer-onboarding.d.ts",
+      "import": "./dist/fixtures/personal-trainer-onboarding.js",
+      "default": "./dist/fixtures/personal-trainer-onboarding.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
