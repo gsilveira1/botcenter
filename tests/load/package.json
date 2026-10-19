@@ -1,0 +1,19 @@
+{
+  "name": "@botcenter/tests-load",
+  "version": "0.0.0",
+  "private": true,
+  "description": "k6 load tests of the Bot Center API (POST /v1/messages and GET /v1/messages/{id})",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "test": "node --test \"test/**/*.test.js\"",
+    "k6:send": "./run-k6.sh send-messages.js",
+    "k6:status": "./run-k6.sh message-status.js",
+    "fake-evolution": "node fake-evolution.mjs"
+  },
+  "devDependencies": {
+    "@botcenter/config": "workspace:*",
+    "eslint": "^9.39.5",
+    "globals": "^16.4.0"
+  }
+}

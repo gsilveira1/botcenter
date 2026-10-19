@@ -1,0 +1,20 @@
+{
+  "status": 201,
+  "body": {
+    "mediaType": "imageMessage",
+    "fileName": "3EB0AABBCCDDEEFF001122.jpeg",
+    "caption": "Meu treino de hoje",
+    "size": {
+      "fileLength": {
+        "low": 48213,
+        "high": 0,
+        "unsigned": true
+      },
+      "height": 1280,
+      "width": 960
+    },
+    "mimetype": "image/jpeg",
+    "base64": "ZmFrZS1qcGVnLWJ5dGVz",
+    "buffer": null
+  }
+}

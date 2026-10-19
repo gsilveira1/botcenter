@@ -1,0 +1,40 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalEnv": ["NODE_ENV", "CI"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": ["coverage/**"]
+    },
+    "test:int": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "env": ["DATABASE_URL", "TESTCONTAINERS_RYUK_DISABLED", "DOCKER_HOST"],
+      "passThroughEnv": ["TEST_LOG_LEVEL", "TESTCONTAINERS_*"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "@botcenter/prisma#build": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": []
+    },
+    "@botcenter/api#openapi": {
+      "dependsOn": ["^build"],
+      "cache": false,
+      "outputs": ["openapi.json"]
+    }
+  }
+}

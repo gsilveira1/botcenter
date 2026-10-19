@@ -1,0 +1,299 @@
+import { randomUUID } from 'node:crypto';
+import { Inject, Injectable } from '@nestjs/common';
+import type {
+  CreateMediaUploadRequest,
+  CreateMediaUploadResponse,
+  MediaContent,
+  MediaUrlResponse,
+} from '@botcenter/contracts';
+import type { OutboundMediaContent } from '@botcenter/whatsapp-provider';
+import { allowsAllInstances } from '../auth/auth-context';
+import type { AuthContext } from '../auth/auth-context';
+import { AppError, notFound, validationError } from '../common/errors/app-error';
+import { ENV } from '../config/env';
+import type { AppEnv } from '../config/env';
+import { SsrfGuard } from '../external-http/ssrf-guard';
+import { ExternalHttpError } from '../ports/external-http.port';
+import { getLogger } from '../logging/logger';
+import { PrismaService } from '../prisma/prisma.service';
+import { QuotaService } from '../rate-limit/quota.service';
+import { TenantsService } from '../services/tenants.service';
+import { fitsMediaType, isAcceptedContentType } from './media-types';
+import { MediaStorage } from './media.storage';
+
+const DAY_MS = 86_400_000;
+export const MEDIA_UPLOADS_QUOTA = 'media-uploads-per-day';
+
+/** Why the worker cannot send a media message. The value is the `failure_reason` of the message. */
+export type MediaFailureReason =
+  | 'media_not_found'
+  | 'media_not_uploaded'
+  | 'media_url_forbidden'
+  | 'media_download_failed'
+  | 'media_too_large'
+  | 'media_type_not_accepted';
+
+export class MediaUnavailableError extends Error {
+  constructor(readonly reason: MediaFailureReason) {
+    super(`Media unavailable: ${reason}`);
+    this.name = 'MediaUnavailableError';
+  }
+}
+
+interface MediaRow {
+  id: string;
+  key: string;
+  contentType: string;
+  sizeBytes: number;
+  fileName: string | null;
+}
+
+const MEDIA_SELECT = {
+  id: true,
+  key: true,
+  contentType: true,
+  sizeBytes: true,
+  fileName: true,
+} as const;
+
+/** The object key of an outbound file. It has no file name and no personal data. */
+export function outboundMediaKey(tenantId: string): string {
+  return `tenants/${tenantId}/outbound/${randomUUID()}`;
+}
+
+/**
+ * Outbound media: the upload URL of `POST /v1/media`, the check of a `media_id` in `POST /v1/messages`,
+ * and the short-lived download URL that the worker gives to the provider.
+ */
+@Injectable()
+export class MediaService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: MediaStorage,
+    private readonly tenants: TenantsService,
+    @Inject(ENV) private readonly env: AppEnv,
+    private readonly guard: SsrfGuard,
+    private readonly quotas: QuotaService,
+  ) {}
+
+  private readonly logger = getLogger('media');
+
+  async createUpload(
+    tenantId: string,
+    request: CreateMediaUploadRequest,
+    now = new Date(),
+  ): Promise<CreateMediaUploadResponse> {
+    if (!isAcceptedContentType(request.content_type)) {
+      throw validationError('The content type is not accepted', [
+        { path: 'content_type', message: 'WhatsApp does not accept this content type' },
+      ]);
+    }
+    await this.assertStorageQuota(tenantId, request.size_bytes, now);
+    await this.consumeDailyUpload(tenantId, now);
+    const tenant = await this.tenants.get(tenantId);
+    const key = outboundMediaKey(tenantId);
+    const row = await this.prisma.forTenant(tenantId).mediaObject.create({
+      data: {
+        tenantId,
+        key,
+        contentType: request.content_type,
+        sizeBytes: request.size_bytes,
+        fileName: request.file_name,
+        direction: 'outbound',
+        expiresAt: new Date(now.getTime() + tenant.retentionDays * DAY_MS),
+      },
+      select: { id: true },
+    });
+    const ttlSeconds = this.env.MEDIA_UPLOAD_URL_TTL_SECONDS;
+    const uploadUrl = await this.storage.uploadUrl(
+      key,
+      request.content_type,
+      request.size_bytes,
+      ttlSeconds,
+    );
+    return {
+      media_id: row.id,
+      upload_url: uploadUrl,
+      expires_at: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
+    };
+  }
+
+  /**
+   * Refuses (400) a `media_id` that the tenant does not have, or a file type that does not fit the
+   * `media_type` of the message. The upload itself is checked by the worker before the send.
+   * Refuses (422 `MEDIA_URL_FORBIDDEN`) a `url` that the SSRF guard refuses now (SEC-01). The worker
+   * checks the URL again when it downloads the file, because a DNS answer can change.
+   */
+  async assertSendable(tenantId: string, content: MediaContent): Promise<void> {
+    if (content.url !== undefined) {
+      await this.assertUrlAllowed(content.url);
+    }
+    if (content.media_id === undefined) {
+      return;
+    }
+    const media = await this.find(tenantId, content.media_id);
+    if (!media) {
+      throw validationError('The media does not exist', [
+        { path: 'media_id', message: 'Unknown media id' },
+      ]);
+    }
+    if (!fitsMediaType(content.media_type, media.contentType)) {
+      throw validationError('The media type does not fit the file', [
+        { path: 'media_type', message: `A ${media.contentType} file cannot be sent as this type` },
+      ]);
+    }
+  }
+
+  /**
+   * The content for the provider. A `media_id` becomes a pre-signed `GET` URL that is valid for
+   * `MEDIA_SEND_URL_TTL_SECONDS`. Throws `MediaUnavailableError` when the row or the upload is missing.
+   * The provider never gets a client URL (SEC-01): the worker first stores the file of a `url` in the
+   * bucket (`MediaUrlFetcher`) and then gives its `media_id` here.
+   */
+  async toProviderContent(tenantId: string, content: MediaContent): Promise<OutboundMediaContent> {
+    if (content.media_id === undefined) {
+      throw new Error('A media URL must be stored in the bucket before the send (SEC-01)');
+    }
+    const base = {
+      type: 'media' as const,
+      media_type: content.media_type,
+      ...(content.caption !== undefined ? { caption: content.caption } : {}),
+    };
+    const media = await this.find(tenantId, content.media_id);
+    if (!media) {
+      throw new MediaUnavailableError('media_not_found');
+    }
+    const stored = await this.storage.head(media.key);
+    if (!stored || stored.sizeBytes !== media.sizeBytes) {
+      throw new MediaUnavailableError('media_not_uploaded');
+    }
+    const fileName = content.file_name ?? media.fileName;
+    return {
+      ...base,
+      url: await this.storage.downloadUrl(media.key, this.env.MEDIA_SEND_URL_TTL_SECONDS),
+      mime_type: media.contentType,
+      ...(fileName ? { file_name: fileName } : {}),
+    };
+  }
+
+  /**
+   * `GET /v1/media/{id}`: a fresh signed GET URL (`MEDIA_READ_URL_TTL_SECONDS`) of a live file of the
+   * tenant. An unknown, expired, or other-tenant file is 404. For a key with an instance list, an inbound
+   * file must belong to a message of one of its instances (else 404). An outbound file belongs to the
+   * tenant (an upload has no instance).
+   */
+  async readUrl(auth: AuthContext, mediaId: string, now = new Date()): Promise<MediaUrlResponse> {
+    const db = this.prisma.forTenant(auth.tenantId);
+    const media = await db.mediaObject.findFirst({
+      where: { id: mediaId, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      select: { ...MEDIA_SELECT, direction: true, createdAt: true },
+    });
+    if (!media || !(await this.visibleTo(auth, media))) {
+      throw notFound('Media');
+    }
+    const ttlSeconds = this.env.MEDIA_READ_URL_TTL_SECONDS;
+    return {
+      media_id: media.id,
+      direction: media.direction,
+      mime_type: media.contentType,
+      size_bytes: media.sizeBytes,
+      file_name: media.fileName,
+      url: await this.storage.downloadUrl(media.key, ttlSeconds),
+      expires_at: new Date(now.getTime() + ttlSeconds * 1000).toISOString(),
+    };
+  }
+
+  /** The inbound message of the file is written before the file (at most one day before). */
+  private async visibleTo(
+    auth: AuthContext,
+    media: { id: string; direction: 'inbound' | 'outbound'; createdAt: Date },
+  ): Promise<boolean> {
+    if (allowsAllInstances(auth) || media.direction === 'outbound') {
+      return true;
+    }
+    const message = await this.prisma.forTenant(auth.tenantId).message.findFirst({
+      where: {
+        direction: 'inbound',
+        instanceId: { in: auth.instanceIds },
+        createdAt: {
+          gte: new Date(media.createdAt.getTime() - DAY_MS),
+          lte: new Date(media.createdAt.getTime() + 60_000),
+        },
+        content: { path: ['media_id'], equals: media.id },
+      },
+      select: { id: true },
+    });
+    return message !== null;
+  }
+
+  /**
+   * SEC-17: 429 `QUOTA_EXCEEDED` when the declared sizes of the live outbound media of the tenant and
+   * the new file are above `MEDIA_MAX_BYTES_PER_TENANT`.
+   */
+  private async assertStorageQuota(tenantId: string, sizeBytes: number, now: Date): Promise<void> {
+    const live = await this.prisma.forTenant(tenantId).mediaObject.aggregate({
+      where: { direction: 'outbound', OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      _sum: { sizeBytes: true },
+    });
+    const used = live._sum.sizeBytes ?? 0;
+    if (used + sizeBytes > this.env.MEDIA_MAX_BYTES_PER_TENANT) {
+      throw new AppError(
+        'QUOTA_EXCEEDED',
+        `The media storage of the tenant is full (${this.env.MEDIA_MAX_BYTES_PER_TENANT} bytes). ` +
+          'Space is free again when old files expire.',
+      );
+    }
+  }
+
+  /**
+   * SEC-17: 429 `QUOTA_EXCEEDED` with `Retry-After` above `MEDIA_UPLOADS_PER_DAY` (UTC day). When Redis
+   * fails, the upload continues (fail open) with an error log, like the daily message quota.
+   */
+  private async consumeDailyUpload(tenantId: string, now: Date): Promise<void> {
+    let result;
+    try {
+      result = await this.quotas.consume({
+        name: MEDIA_UPLOADS_QUOTA,
+        subject: tenantId,
+        window: 'day',
+        limit: this.env.MEDIA_UPLOADS_PER_DAY,
+        now,
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'daily media upload quota check failed; the upload continues',
+      );
+      return;
+    }
+    if (!result.allowed) {
+      throw new AppError(
+        'QUOTA_EXCEEDED',
+        `The daily quota of ${result.limit} media uploads is used. It resets at 00:00 UTC.`,
+        { headers: { 'Retry-After': String(result.retryAfterSeconds) } },
+      );
+    }
+  }
+
+  private async assertUrlAllowed(url: string): Promise<void> {
+    try {
+      await this.guard.check(url);
+    } catch (error) {
+      if (!(error instanceof ExternalHttpError)) {
+        throw error;
+      }
+      const detail =
+        error.code === 'network'
+          ? 'The host name of the media URL does not resolve'
+          : `The media URL is not allowed: ${error.message}`;
+      throw new AppError('MEDIA_URL_FORBIDDEN', detail);
+    }
+  }
+
+  private find(tenantId: string, mediaId: string): Promise<MediaRow | null> {
+    return this.prisma.forTenant(tenantId).mediaObject.findFirst({
+      where: { id: mediaId, direction: 'outbound' },
+      select: MEDIA_SELECT,
+    });
+  }
+}

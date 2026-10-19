@@ -1,0 +1,10 @@
+{
+  "status": 500,
+  "body": {
+    "status": 500,
+    "error": "Internal Server Error",
+    "response": {
+      "message": "Cannot read properties of undefined (reading 'onWhatsApp')"
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@botcenter/tests-infra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tests of the infrastructure as code: Compose invariants, Caddy routes, PostgreSQL roles, and the host scripts",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint test",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --config vitest.config.mts",
+    "test:int": "vitest run --config vitest.int.config.mts"
+  },
+  "devDependencies": {
+    "@botcenter/config": "workspace:*",
+    "@types/node": "^24.19.2",
+    "@types/pg": "^8.15.0",
+    "bullmq": "^5.81.5",
+    "eslint": "^9.39.5",
+    "ioredis": "^5.11.1",
+    "pg": "^8.16.0",
+    "testcontainers": "^12.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12",
+    "yaml": "^2.9.1"
+  }
+}

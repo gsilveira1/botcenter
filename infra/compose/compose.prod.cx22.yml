@@ -1,0 +1,76 @@
+# Profile for the start host: Hetzner CX22 (2 vCPU, 4 GB). Add this file after compose.prod.yml:
+#
+#   docker compose -f infra/compose/compose.prod.yml -f infra/compose/compose.prod.cx22.yml \
+#     --env-file /etc/botcenter/compose.env up -d
+#
+# Alternative: put the same values in /etc/botcenter/compose.env (the variables below have the same names).
+# The host also needs the 2 GB swap file of infra/host/bootstrap.sh.
+#
+# Memory limits (sum 3.4 GB; a limit is a maximum, not a reservation):
+#   Evolution 1280M, PostgreSQL 640M, Redis 256M, API 320M, workers 512M,
+#   Caddy 128M, Uptime Kuma 160M, Alloy 160M.
+# Move to the CX32 and remove this file when one trigger of docs/runbook.md, procedure "Scale up", occurs.
+services:
+  api:
+    environment:
+      NODE_OPTIONS: --max-old-space-size=224
+    deploy:
+      resources:
+        limits:
+          memory: 320M
+
+  worker:
+    environment:
+      NODE_OPTIONS: --max-old-space-size=384
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  evolution:
+    deploy:
+      resources:
+        limits:
+          memory: 1280M
+
+  postgres:
+    command:
+      - postgres
+      - -c
+      - shared_buffers=160MB
+      - -c
+      - effective_cache_size=480MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=60
+      - -c
+      - log_min_duration_statement=500
+      - -c
+      - password_encryption=scram-sha-256
+    deploy:
+      resources:
+        limits:
+          memory: 640M
+
+  redis:
+    environment:
+      REDIS_MAXMEMORY: 160mb
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  uptime-kuma:
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+
+  alloy:
+    deploy:
+      resources:
+        limits:
+          memory: 160M

@@ -1,0 +1,17 @@
+{
+  "status": 201,
+  "body": {
+    "settings": {
+      "instanceName": "inst_0192f1a4-7c2e-7b51-9a0e-3f5d2c8b6e41",
+      "settings": {
+        "rejectCall": false,
+        "msgCall": "",
+        "groupsIgnore": true,
+        "alwaysOnline": false,
+        "readMessages": false,
+        "readStatus": false,
+        "syncFullHistory": false
+      }
+    }
+  }
+}

@@ -1,0 +1,169 @@
+// Grafana Alloy of the Bot Center host (service `alloy` of infra/compose/compose.prod.yml).
+//
+// Logs:    the journal of the host (journald log driver of the containers; SEC-07: no Docker data
+//          directory, no Docker socket) -> Grafana Cloud Loki.
+//          Labels: service (Compose service), stream, host, environment.
+// Metrics: the API (api:9465/metrics), the workers (worker:9464/metrics), Redis (exporter built in,
+//          user `metrics`), the host (node exporter built in), and the text file metrics of the host
+//          scripts (backup, restore test, disk usage)
+//          -> Grafana Cloud Prometheus (remote write).
+// Credentials: alloy.env (GRAFANA_CLOUD_*). No secret in this file.
+
+logging {
+	level  = "warn"
+	format = "json"
+}
+
+// ---------------------------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------------------------
+
+// Only the entries of the Bot Center Compose project. Docker writes the label
+// com.docker.compose.project as the journal field COM_DOCKER_COMPOSE_PROJECT.
+loki.source.journal "containers" {
+	path          = "/var/log/journal"
+	matches       = "COM_DOCKER_COMPOSE_PROJECT=botcenter"
+	max_age       = "12h"
+	relabel_rules = loki.relabel.journal.rules
+	forward_to    = [loki.process.containers.receiver]
+}
+
+loki.relabel "journal" {
+	forward_to = []
+
+	rule {
+		source_labels = ["__journal_com_docker_compose_service"]
+		target_label  = "service"
+	}
+
+	// The journald log driver writes stdout with priority 6 and stderr with priority 3.
+	rule {
+		source_labels = ["__journal_priority"]
+		regex         = "3"
+		target_label  = "stream"
+		replacement   = "stderr"
+	}
+
+	rule {
+		source_labels = ["__journal_priority"]
+		regex         = "6"
+		target_label  = "stream"
+		replacement   = "stdout"
+	}
+}
+
+loki.process "containers" {
+	// The Evolution API can write phone numbers in its error lines. Mask them as 5511*****4321.
+	stage.match {
+		selector = "{service=\"evolution\"}"
+
+		stage.replace {
+			expression = "\\b\\d{4}(\\d{3,9})\\d{4}\\b"
+			replace    = "*****"
+		}
+	}
+
+	stage.static_labels {
+		values = {
+			host        = sys.env("BOTCENTER_HOST_NAME"),
+			environment = sys.env("BOTCENTER_ENVIRONMENT"),
+		}
+	}
+
+	forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+loki.write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_LOKI_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_LOKI_USER")
+			password = sys.env("GRAFANA_CLOUD_API_TOKEN")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------------------------
+
+// The metrics listeners are on the `metrics` network only (SEC-01). The HTTP port of the API has no
+// /metrics route.
+prometheus.scrape "botcenter_api" {
+	job_name        = "botcenter-api"
+	targets         = [{"__address__" = "api:9465", "service" = "api"}]
+	metrics_path    = "/metrics"
+	scrape_interval = "15s"
+	forward_to      = [prometheus.relabel.common.receiver]
+}
+
+prometheus.scrape "botcenter_worker" {
+	job_name        = "botcenter-worker"
+	targets         = [{"__address__" = "worker:9464", "service" = "worker"}]
+	metrics_path    = "/metrics"
+	scrape_interval = "15s"
+	forward_to      = [prometheus.relabel.common.receiver]
+}
+
+// Host CPU, memory, disk I/O, and the text files of the host scripts (/var/lib/botcenter/metrics).
+// No `filesystem` collector: it needs the host root. infra/backup/disk-check.sh writes the disk usage
+// (botcenter_host_filesystem_*) as a text file every 15 minutes (SEC-07).
+prometheus.exporter.unix "host" {
+	procfs_path = "/host/proc"
+	sysfs_path  = "/host/sys"
+
+	set_collectors = ["cpu", "diskstats", "loadavg", "meminfo", "netdev", "pressure", "stat", "textfile", "time", "uname", "vmstat"]
+
+	textfile {
+		directory = "/host/textfile"
+	}
+}
+
+prometheus.scrape "host" {
+	job_name        = "host"
+	targets         = prometheus.exporter.unix.host.targets
+	scrape_interval = "30s"
+	forward_to      = [prometheus.relabel.common.receiver]
+}
+
+// Redis is shared with the Evolution API, and a full Redis refuses writes (noeviction). The ACL user
+// `metrics` can run INFO only (SEC-11), so CONFIG is off: maxmemory comes from INFO.
+prometheus.exporter.redis "redis" {
+	redis_addr     = "redis:6379"
+	redis_user     = "metrics"
+	redis_password = sys.env("REDIS_METRICS_PASSWORD")
+	config_command = ""
+}
+
+prometheus.scrape "redis" {
+	job_name        = "redis"
+	targets         = prometheus.exporter.redis.redis.targets
+	scrape_interval = "30s"
+	forward_to      = [prometheus.relabel.common.receiver]
+}
+
+prometheus.relabel "common" {
+	rule {
+		target_label = "host"
+		replacement  = sys.env("BOTCENTER_HOST_NAME")
+	}
+
+	rule {
+		target_label = "environment"
+		replacement  = sys.env("BOTCENTER_ENVIRONMENT")
+	}
+
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_PROM_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_PROM_USER")
+			password = sys.env("GRAFANA_CLOUD_API_TOKEN")
+		}
+	}
+}

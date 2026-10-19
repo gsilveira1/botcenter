@@ -1,0 +1,61 @@
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import type { Redis } from 'ioredis';
+import { assertWorkerShutdownBudget, createShutdown } from './common/shutdown';
+import { loadEnv } from './config/env';
+import { createWorkerReadiness } from './health/worker-readiness';
+import { PinoNestLogger, createRootLogger, flushLogs, getLogger } from './logging/logger';
+import { MetricsService } from './metrics/metrics.service';
+import { closeServer, startWorkerMetricsServer } from './metrics/worker-metrics.server';
+import { PrismaService } from './prisma/prisma.service';
+import { REDIS } from './redis/redis.module';
+import { WorkerModule } from './worker.module';
+
+/**
+ * Entry point of the worker process: `node dist/worker.js` with `ROLE=worker`. It starts a Nest
+ * application context (no HTTP server) with the queue consumers and the internal metrics listener.
+ * Graceful shutdown: SIGTERM closes the metrics listener, then `app.close()` closes the workers (BullMQ
+ * waits for the current jobs; the other jobs stay in the queue), the queues, Redis, and PostgreSQL.
+ * The shutdown time is `WORKER_SHUTDOWN_TIMEOUT_MS` (default 100 s). It must be longer than the longest
+ * job, or the worker does not start (ARCH-11). Set the container stop time above it (110 s).
+ * Container memory: `NODE_OPTIONS=--max-old-space-size=768` for the 1 GB worker container.
+ */
+async function main(): Promise<void> {
+  process.env['ROLE'] ??= 'worker';
+  const env = loadEnv();
+  if (env.ROLE !== 'worker') {
+    throw new Error(`dist/worker.js runs the workers: ROLE must be "worker", not "${env.ROLE}"`);
+  }
+  assertWorkerShutdownBudget(env);
+  createRootLogger(env.LOG_LEVEL);
+  const logger = getLogger('worker');
+  const app = await NestFactory.createApplicationContext(WorkerModule, {
+    logger: new PinoNestLogger(),
+    abortOnError: false,
+  });
+  const readiness = createWorkerReadiness(app.get(PrismaService), app.get<Redis>(REDIS));
+  const server = await startWorkerMetricsServer(
+    app.get(MetricsService),
+    env.WORKER_METRICS_PORT,
+    env.WORKER_METRICS_HOST,
+    readiness,
+  );
+  logger.info({ env: env.NODE_ENV }, 'worker started');
+
+  const shutdown = createShutdown({
+    close: async () => {
+      await closeServer(server);
+      await app.close();
+    },
+    timeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
+    logger,
+  });
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+}
+
+main().catch((error: unknown) => {
+  getLogger('worker').fatal({ err: error }, 'worker failed to start');
+  flushLogs();
+  process.exit(1);
+});

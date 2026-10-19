@@ -1,0 +1,17 @@
+{
+  "status": 201,
+  "body": {
+    "id": "cmvf934410001pa7a9rw2w9wk",
+    "url": "http://host.docker.internal:18999/hook2",
+    "headers": {
+      "x-botcenter-webhook-secret": "n3w"
+    },
+    "enabled": true,
+    "events": ["QRCODE_UPDATED", "CONNECTION_UPDATE", "MESSAGES_UPSERT", "MESSAGES_UPDATE"],
+    "webhookByEvents": false,
+    "webhookBase64": false,
+    "createdAt": "2026-10-19T12:48:37.009Z",
+    "updatedAt": "2026-10-19T12:50:16.975Z",
+    "instanceId": "381afe88-5abf-4853-b835-fedf77635d75"
+  }
+}

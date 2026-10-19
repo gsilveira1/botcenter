@@ -1,0 +1,29 @@
+{
+  "name": "botcenter",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Bot Center: gateway and bot engine in front of the Evolution API (monorepo)",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=24.15.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:int": "turbo run test:int",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:generate": "pnpm --filter @botcenter/prisma generate",
+    "db:migrate": "pnpm --filter @botcenter/prisma migrate",
+    "gate": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:int",
+    "test:smoke": "pnpm --filter @botcenter/tests-smoke smoke"
+  },
+  "devDependencies": {
+    "@botcenter/config": "workspace:*",
+    "prettier": "^3.9.10",
+    "turbo": "^2.11.9",
+    "typescript": "^5.9.3"
+  }
+}
