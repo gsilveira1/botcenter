@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from 'node:timers/promises';
 import { Inject, Injectable } from '@nestjs/common';
 import { Scope } from '@botcenter/contracts';
 import { generateApiKey, hashSecret } from '../auth/api-key';
@@ -11,6 +12,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { TransactionClient } from '../prisma/prisma.service';
 import { AuditService } from '../services/audit.service';
 import { TenantsService } from '../services/tenants.service';
+
+/** Attempts to delete the cache entry of a revoked key, and the delay before each retry. */
+const REVOKE_CACHE_ATTEMPTS = 3;
+const REVOKE_CACHE_RETRY_MS = 500;
 
 /** Active keys with the same tenant and the same scope set: two during a rotation, never more. */
 export const MAX_ACTIVE_KEYS_PER_SCOPE_SET = 2;
@@ -235,7 +240,7 @@ export class AdminService {
       return updated;
     });
     // The revocation is immediate: the guard reads the database at the next request.
-    await this.keys.invalidate(revoked.prefix);
+    await this.markRevoked(revoked.prefix);
     return view(revoked);
   }
 
@@ -280,6 +285,29 @@ export class AdminService {
     });
     await this.keys.invalidate(result.apiKey.prefix);
     return result;
+  }
+
+  /**
+   * Sets the revocation marker and deletes the cache entry, with retries for a short Redis error. When
+   * Redis stays down, the revocation is committed and the old cache entry ends in at most 60 s.
+   */
+  private async markRevoked(prefix: string): Promise<void> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.keys.markRevoked(prefix);
+        return;
+      } catch (error) {
+        if (attempt >= REVOKE_CACHE_ATTEMPTS) {
+          throw new AppError(
+            'INTERNAL',
+            `The key is revoked in the database, but the cache entry was not deleted (Redis error). ` +
+              `The key stops to work in at most 60 s.`,
+            { cause: error },
+          );
+        }
+        await sleep(REVOKE_CACHE_RETRY_MS * attempt);
+      }
+    }
   }
 
   private async insertKey(

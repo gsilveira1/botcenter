@@ -5,6 +5,8 @@
 export const redisKeys = {
   apiKey: (prefix: string) => `bc:apikey:${prefix}`,
   apiKeyTouched: (keyId: string) => `bc:apikey-touched:${keyId}`,
+  /** Revocation marker of an API key prefix: a cache fill does not write while it exists (SEC-08). */
+  apiKeyRevoked: (prefix: string) => `bc:apikey-rev:${prefix}`,
   tenant: (tenantId: string) => `bc:tenant:${tenantId}`,
   quota: (name: string, subject: string, window: string) => `bc:quota:${name}:${subject}:${window}`,
   lock: (name: string) => `bc:lock:${name}`,

@@ -1,6 +1,10 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AdminService } from '../../src/admin/admin.service';
 import { ApiKeyService } from '../../src/auth/api-key.service';
+import { PrismaService } from '../../src/prisma/prisma.service';
+import { AuditService } from '../../src/services/audit.service';
+import { TenantsService } from '../../src/services/tenants.service';
 import { redisKeys } from '../../src/redis/redis-keys';
 import { TestHarness } from '../support/harness';
 import { ProbeController } from '../support/probe.controller';
@@ -61,6 +65,38 @@ describe('API key authentication', () => {
     expect(cached.statusCode).toBe(200);
 
     await h.get(ApiKeyService).invalidate(created.prefix);
+    const refused = await h.inject({
+      method: 'GET',
+      url: '/v1/probe/scoped',
+      headers: h.bearer(created.key),
+    });
+    expect(refused.statusCode).toBe(401);
+  });
+
+  it('refuses a revoked key after a cache fill that read the row before the revocation (SEC-08)', async () => {
+    const created = await h.createApiKey({ tenantId, scopes: ['messages:send'] });
+    const keys = h.get(ApiKeyService);
+    const admin = new AdminService(
+      h.env,
+      h.get(PrismaService),
+      h.get(AuditService),
+      keys,
+      h.get(TenantsService),
+    );
+    // A request misses the cache and reads the row. The operator revokes the key before the request
+    // writes the cache entry.
+    const slowReader = {
+      apiKey: {
+        findUnique: async (args: { where: { prefix: string } }) => {
+          const row = await h.prisma.apiKey.findUnique(args);
+          await admin.revokeKey(created.prefix, 'cli:test');
+          return row;
+        },
+      },
+    } as unknown as PrismaService;
+    const inFlight = await new ApiKeyService(slowReader, h.redis).findByPrefix(created.prefix);
+    expect(inFlight?.revokedAt).toBeNull();
+
     const refused = await h.inject({
       method: 'GET',
       url: '/v1/probe/scoped',
