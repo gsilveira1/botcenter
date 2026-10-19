@@ -11,4 +11,6 @@ export const redisKeys = {
   inboundDedupe: (dedupeKey: string) => `bc:dedupe:inbound:${dedupeKey}`,
   /** Hash of the open operational incidents (field: incident key, value: ISO open time). */
   incidents: () => 'bc:incidents',
+  /** Send token bucket of an instance (messages slice, Lua script). */
+  outboundBucket: (instanceId: string) => `bc:bucket:instance:${instanceId}`,
 } as const;

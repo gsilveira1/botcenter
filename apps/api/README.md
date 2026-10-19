@@ -155,6 +155,7 @@ Register a `MaintenanceTask` (`name`, `everyMs`, `run(now)`) with `MaintenanceTa
   const job = await h.get(QueuesService).get('inbound').getJob(inboundJobId(webhook.dedupeKey));
   ```
 
+- Object storage: `TestHarness.start({ minio: true })` starts MinIO with one private bucket and points the `S3_*` environment to it (`h.minio.endpoint`, `h.minio.bucket`).
 - HTTP mode: `TestHarness.start({ fakeEvolution: true })` starts a `FakeEvolutionServer` (`h.evolution`). The real `providerFactory` binds the real `EvolutionProvider` (`h.whatsapp`) to it, and the app listens on `127.0.0.1` (`h.baseUrl`). `h.provider` throws in this mode.
 
   ```ts

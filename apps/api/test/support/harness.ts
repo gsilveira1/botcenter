@@ -24,8 +24,8 @@ import { PROVIDER_BINDINGS, WHATSAPP_PROVIDER } from '../../src/provider/provide
 import type { ProviderBindings } from '../../src/provider/provider.tokens';
 import { AlertService } from '../../src/services/alert.service';
 import { WorkerModule } from '../../src/worker.module';
-import { startContainers } from './containers';
-import type { TestContainers } from './containers';
+import { startContainers, startMinio } from './containers';
+import type { TestContainers, TestMinio } from './containers';
 import { RecordingAlertService } from './recording-alerts';
 
 /** The shared secret of the internal provider webhook in tests. */
@@ -67,6 +67,8 @@ export interface HarnessOptions {
    * option, the app uses the in-memory `FakeWhatsAppProvider` (`h.provider`) and `h.inject()` only.
    */
   fakeEvolution?: boolean | Omit<FakeEvolutionServerOptions, 'apiKey'>;
+  /** Start MinIO with one private bucket and point the `S3_*` environment to it (`h.minio`). */
+  minio?: boolean;
 }
 
 export interface CreatedApiKey {
@@ -112,6 +114,8 @@ interface HarnessParts {
   fakeBindings?: ProviderBindings;
   /** The fake Evolution server (`fakeEvolution` mode). */
   evolution?: FakeEvolutionServer;
+  /** MinIO (`minio` option). */
+  minio?: TestMinio;
 }
 
 /**
@@ -144,6 +148,7 @@ export class TestHarness {
   private readonly options: HarnessOptions;
   private readonly fakeBindings: ProviderBindings | undefined;
   private readonly fakeEvolution: FakeEvolutionServer | undefined;
+  private readonly testMinio: TestMinio | undefined;
   private workers: TestingModule[] = [];
 
   private constructor(parts: HarnessParts) {
@@ -157,10 +162,14 @@ export class TestHarness {
     this.options = parts.options;
     this.fakeBindings = parts.fakeBindings;
     this.fakeEvolution = parts.evolution;
+    this.testMinio = parts.minio;
   }
 
   static async start(options: HarnessOptions = {}): Promise<TestHarness> {
-    const containers = await startContainers();
+    const [containers, minio] = await Promise.all([
+      startContainers(),
+      options.minio ? startMinio() : Promise.resolve(undefined),
+    ]);
     const evolution = options.fakeEvolution
       ? await FakeEvolutionServer.start({
           ...(options.fakeEvolution === true ? {} : options.fakeEvolution),
@@ -185,6 +194,7 @@ export class TestHarness {
       S3_BUCKET: 'test',
       S3_ACCESS_KEY_ID: 'test',
       S3_SECRET_ACCESS_KEY: 'test-secret',
+      ...minio?.env,
       ...options.env,
     });
     // The fake pair has no `close`: the harness owns it, and the API and the worker share it.
@@ -225,6 +235,7 @@ export class TestHarness {
       options,
       ...(fakeBindings ? { fakeBindings } : {}),
       ...(evolution ? { evolution } : {}),
+      ...(minio ? { minio } : {}),
     });
   }
 
@@ -278,6 +289,14 @@ export class TestHarness {
     return this.app.get<WhatsAppProvider>(WHATSAPP_PROVIDER);
   }
 
+  /** MinIO of the `minio` option. It throws without the option. */
+  get minio(): TestMinio {
+    if (!this.testMinio) {
+      throw new Error('h.minio exists only with TestHarness.start({ minio: true })');
+    }
+    return this.testMinio;
+  }
+
   /** The URL of the app on the loopback address (`fakeEvolution` mode only). */
   get baseUrl(): string {
     if (!this.fakeEvolution) {
@@ -322,9 +341,13 @@ export class TestHarness {
    * Starts the worker process (`WorkerModule` + `modules`) against the same containers, with the same
    * fakes. The workers start in `onApplicationBootstrap`. `close()` stops them.
    */
-  async startWorker(modules: Type[] = []): Promise<TestingModule> {
+  /**
+   * Builds a worker process. `root` replaces the root module, for example to test the core without the
+   * handlers of the feature slices.
+   */
+  async startWorker(modules: Type[] = [], root: Type = WorkerModule): Promise<TestingModule> {
     const env = { ...this.env, ROLE: 'worker' as const };
-    let builder = Test.createTestingModule({ imports: [WorkerModule, ...modules] });
+    let builder = Test.createTestingModule({ imports: [root, ...modules] });
     builder = TestHarness.applyOverrides(
       builder,
       env,
@@ -383,6 +406,7 @@ export class TestHarness {
     }
     await this.app.close();
     await this.fakeEvolution?.close();
+    await this.testMinio?.stop();
     await this.prisma.$disconnect();
     this.redis.disconnect();
     await this.containers.stop();

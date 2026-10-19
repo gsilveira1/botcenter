@@ -33,98 +33,104 @@ const optional = <T extends z.ZodType>(schema: T) =>
 export const ROLES = ['api', 'worker'] as const;
 export type Role = (typeof ROLES)[number];
 
-export const EnvSchema = z
-  .object({
-    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    /** `api` runs the HTTP server. `worker` runs the queue workers. */
-    ROLE: z.enum(ROLES).default('api'),
-    PORT: positiveInt.max(65535).default(3000),
-    LOG_LEVEL: z
-      .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
-      .default('info'),
-    /** Public base URL of the API. The instances slice builds `events_url` from it. */
-    PUBLIC_BASE_URL: httpUrl.default('http://localhost:3000'),
+export const EnvSchema = z.object({
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  /** `api` runs the HTTP server. `worker` runs the queue workers. */
+  ROLE: z.enum(ROLES).default('api'),
+  PORT: positiveInt.max(65535).default(3000),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  /** Public base URL of the API. The instances slice builds `events_url` from it. */
+  PUBLIC_BASE_URL: httpUrl.default('http://localhost:3000'),
 
-    DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
-    DATABASE_POOL_SIZE: positiveInt.max(100).default(10),
-    REDIS_URL: z.url({ protocol: /^rediss?$/ }),
+  DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+  DATABASE_POOL_SIZE: positiveInt.max(100).default(10),
+  REDIS_URL: z.url({ protocol: /^rediss?$/ }),
 
-    /** Pepper of the API key hashes: `sha256(pepper + secret)`. */
-    API_KEY_PEPPER: z.string().min(32, 'Must have at least 32 characters'),
-    /** AES-256-GCM key (base64, 32 bytes) of `SecretBox` (webhook secrets). */
-    DATA_ENCRYPTION_KEY: key32Base64,
+  /** Pepper of the API key hashes: `sha256(pepper + secret)`. */
+  API_KEY_PEPPER: z.string().min(32, 'Must have at least 32 characters'),
+  /** AES-256-GCM key (base64, 32 bytes) of `SecretBox` (webhook secrets). */
+  DATA_ENCRYPTION_KEY: key32Base64,
 
-    EVOLUTION_URL: httpUrl,
-    EVOLUTION_API_KEY: z.string().min(1),
-    /** Shared secret of the internal provider webhook (header `x-botcenter-webhook-secret`). */
-    EVOLUTION_WEBHOOK_SECRET: z.string().min(32, 'Must have at least 32 characters'),
-    /** Base URL of this API on the internal network, for the provider webhook (`http://api:3000`). */
-    INTERNAL_WEBHOOK_BASE_URL: httpUrl,
-    /**
-     * How the Evolution adapter sends `buttons` and `list` content. `text` (default) sends a numbered text
-     * menu. `native` sends the native messages, which many WhatsApp clients do not show (provider README).
-     */
-    EVOLUTION_INTERACTIVE_FALLBACK: z.enum(['text', 'native']).default('text'),
-    /** Time limit of a state, create, logout, delete, or ping request (also the readiness ping). */
-    EVOLUTION_REQUEST_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.requestMs),
-    /** Time limit of `connect` (Evolution waits about 2 s for the first QR code). */
-    EVOLUTION_CONNECT_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.connectMs),
-    /** Time limit of one send. The adapter adds the typing delay to it. */
-    EVOLUTION_SEND_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.sendMs),
-    /** Time limit of one media download. */
-    EVOLUTION_MEDIA_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.mediaMs),
+  EVOLUTION_URL: httpUrl,
+  EVOLUTION_API_KEY: z.string().min(1),
+  /** Shared secret of the internal provider webhook (header `x-botcenter-webhook-secret`). */
+  EVOLUTION_WEBHOOK_SECRET: z.string().min(32, 'Must have at least 32 characters'),
+  /** Base URL of this API on the internal network, for the provider webhook (`http://api:3000`). */
+  INTERNAL_WEBHOOK_BASE_URL: httpUrl,
+  /**
+   * How the Evolution adapter sends `buttons` and `list` content. `text` (default) sends a numbered text
+   * menu. `native` sends the native messages, which many WhatsApp clients do not show (provider README).
+   */
+  EVOLUTION_INTERACTIVE_FALLBACK: z.enum(['text', 'native']).default('text'),
+  /** Time limit of a state, create, logout, delete, or ping request (also the readiness ping). */
+  EVOLUTION_REQUEST_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.requestMs),
+  /** Time limit of `connect` (Evolution waits about 2 s for the first QR code). */
+  EVOLUTION_CONNECT_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.connectMs),
+  /** Time limit of one send. The adapter adds the typing delay to it. */
+  EVOLUTION_SEND_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.sendMs),
+  /** Time limit of one media download. */
+  EVOLUTION_MEDIA_TIMEOUT_MS: evolutionTimeout(DEFAULT_TIMEOUTS.mediaMs),
 
-    S3_ENDPOINT: httpUrl,
-    S3_REGION: z.string().min(1).default('auto'),
-    S3_BUCKET: z.string().min(1),
-    S3_ACCESS_KEY_ID: z.string().min(1),
-    S3_SECRET_ACCESS_KEY: z.string().min(1),
-    S3_FORCE_PATH_STYLE: booleanString.default(false),
+  S3_ENDPOINT: httpUrl,
+  S3_REGION: z.string().min(1).default('auto'),
+  S3_BUCKET: z.string().min(1),
+  S3_ACCESS_KEY_ID: z.string().min(1),
+  S3_SECRET_ACCESS_KEY: z.string().min(1),
+  S3_FORCE_PATH_STYLE: booleanString.default(false),
 
-    /** Discord webhook of the operations channel. Without it, `AlertService` logs the alert at `error`. */
-    ALERT_DISCORD_WEBHOOK_URL: optional(z.url({ protocol: /^https$/ })),
+  /** Discord webhook of the operations channel. Without it, `AlertService` logs the alert at `error`. */
+  ALERT_DISCORD_WEBHOOK_URL: optional(z.url({ protocol: /^https$/ })),
 
-    /**
-     * Proxies that Fastify trusts for `X-Forwarded-For` (`proxy-addr` syntax). The default trusts only
-     * private addresses (Caddy on the Docker network), so `request.ip` is the first public address.
-     */
-    TRUST_PROXY: z.string().min(1).default('loopback,linklocal,uniquelocal'),
-    /** Maximum JSON body of a request. Routes in `ROUTE_BODY_LIMITS` can have more. */
-    BODY_LIMIT_BYTES: positiveInt.default(MIB),
-    /** Maximum body of `POST /internal/evolution/webhook`. */
-    INTERNAL_WEBHOOK_BODY_LIMIT_BYTES: positiveInt.default(8 * MIB),
-    /** Keep-alive time of an idle HTTP connection. Keep it above the idle time of Caddy. */
-    KEEP_ALIVE_TIMEOUT_MS: positiveInt.default(65_000),
-    /** Maximum time of a graceful shutdown (current requests and jobs). */
-    SHUTDOWN_TIMEOUT_MS: positiveInt.default(25_000),
+  /**
+   * Proxies that Fastify trusts for `X-Forwarded-For` (`proxy-addr` syntax). The default trusts only
+   * private addresses (Caddy on the Docker network), so `request.ip` is the first public address.
+   */
+  TRUST_PROXY: z.string().min(1).default('loopback,linklocal,uniquelocal'),
+  /** Maximum JSON body of a request. Routes in `ROUTE_BODY_LIMITS` can have more. */
+  BODY_LIMIT_BYTES: positiveInt.default(MIB),
+  /** Maximum body of `POST /internal/evolution/webhook`. */
+  INTERNAL_WEBHOOK_BODY_LIMIT_BYTES: positiveInt.default(8 * MIB),
+  /** Keep-alive time of an idle HTTP connection. Keep it above the idle time of Caddy. */
+  KEEP_ALIVE_TIMEOUT_MS: positiveInt.default(65_000),
+  /** Maximum time of a graceful shutdown (current requests and jobs). */
+  SHUTDOWN_TIMEOUT_MS: positiveInt.default(25_000),
 
-    /** Internal HTTP listener of the worker process (`/metrics`, `/health/live`). */
-    WORKER_METRICS_PORT: positiveInt.max(65535).default(9464),
-    WORKER_CONCURRENCY_OUTBOUND: positiveInt.max(200).default(10),
-    WORKER_CONCURRENCY_INBOUND: positiveInt.max(200).default(10),
-    WORKER_CONCURRENCY_WEBHOOKS: positiveInt.max(200).default(10),
-    WORKER_CONCURRENCY_TIMERS: positiveInt.max(200).default(5),
-    WORKER_CONCURRENCY_MAINTENANCE: positiveInt.max(10).default(1),
+  /** Internal HTTP listener of the worker process (`/metrics`, `/health/live`). */
+  WORKER_METRICS_PORT: positiveInt.max(65535).default(9464),
+  WORKER_CONCURRENCY_OUTBOUND: positiveInt.max(200).default(10),
+  WORKER_CONCURRENCY_INBOUND: positiveInt.max(200).default(10),
+  WORKER_CONCURRENCY_WEBHOOKS: positiveInt.max(200).default(10),
+  WORKER_CONCURRENCY_TIMERS: positiveInt.max(200).default(5),
+  WORKER_CONCURRENCY_MAINTENANCE: positiveInt.max(10).default(1),
 
-    /**
-     * Test and development only: the SSRF guard of the external HTTP client accepts private, loopback, and
-     * link-local addresses. The schema refuses `true` when `NODE_ENV=production`.
-     */
-    EXTERNAL_HTTP_ALLOW_PRIVATE: booleanString.default(false),
-    /** Maximum response body of an external HTTP call (the `external` condition of the engine). */
-    EXTERNAL_HTTP_MAX_RESPONSE_BYTES: positiveInt.max(16 * MIB).default(MIB),
-    /** Pause of the outbox dispatcher of the worker when no event waits. */
-    OUTBOX_DISPATCH_INTERVAL_MS: positiveInt.max(60_000).default(1_000),
-  })
-  .superRefine((env, ctx) => {
-    if (env.NODE_ENV === 'production' && env.EXTERNAL_HTTP_ALLOW_PRIVATE) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['EXTERNAL_HTTP_ALLOW_PRIVATE'],
-        message: 'Must be false when NODE_ENV is production',
-      });
-    }
-  });
+  /** Size (burst) of the send token bucket of each instance. The rate is `instances.rateLimitPerMinute`. */
+  OUTBOUND_BUCKET_BURST: positiveInt.max(60).default(3),
+  /** Warm-up of a new number: the days from the first connection to the full send rate. `0` or `1` turns it off. */
+  OUTBOUND_WARMUP_DAYS: z.coerce.number().int().min(0).max(90).default(7),
+  /** Warm-up: the send rate on the first day, in percent of the full rate. The rate grows linearly. */
+  OUTBOUND_WARMUP_START_PERCENT: positiveInt.max(100).default(20),
+  /** Validity of the pre-signed upload URL of `POST /v1/media`. */
+  MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(900),
+  /** Validity of the pre-signed download URL that the provider gets for a media message. */
+  MEDIA_SEND_URL_TTL_SECONDS: positiveInt.max(86_400).default(900),
+
+  /**
+   * Test and development only: the SSRF guard of the external HTTP client accepts private, loopback, and
+   * link-local addresses. `loadEnv` refuses `true` when `NODE_ENV=production`.
+   */
+  EXTERNAL_HTTP_ALLOW_PRIVATE: booleanString.default(false),
+  /** Maximum response body of an external HTTP call (the `external` condition of the engine). */
+  EXTERNAL_HTTP_MAX_RESPONSE_BYTES: positiveInt.max(16 * MIB).default(MIB),
+  /** Pause of the outbox dispatcher of the worker when no event waits. */
+  OUTBOX_DISPATCH_INTERVAL_MS: positiveInt.max(60_000).default(1_000),
+});
+
+/** Rules between variables. A schema refinement would hide the object shape, so `loadEnv` applies them. */
+function crossChecks(env: z.infer<typeof EnvSchema>): string[] {
+  return env.NODE_ENV === 'production' && env.EXTERNAL_HTTP_ALLOW_PRIVATE
+    ? ['EXTERNAL_HTTP_ALLOW_PRIVATE: Must be false when NODE_ENV is production']
+    : [];
+}
 
 export type AppEnv = z.infer<typeof EnvSchema>;
 
@@ -147,6 +153,10 @@ export function loadEnv(
     throw new EnvError(
       result.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`),
     );
+  }
+  const problems = crossChecks(result.data);
+  if (problems.length > 0) {
+    throw new EnvError(problems);
   }
   return result.data;
 }

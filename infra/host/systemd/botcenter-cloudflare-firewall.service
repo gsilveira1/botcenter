@@ -1,0 +1,12 @@
+[Unit]
+Description=Bot Center: allow port 443 only from the current Cloudflare IP ranges
+Documentation=file:///opt/botcenter/docs/runbook.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/botcenter/firewall.env
+ExecStart=/opt/botcenter/infra/host/firewall-cloudflare.sh
+TimeoutStartSec=5m

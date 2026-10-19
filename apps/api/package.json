@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1152.0",
+    "@aws-sdk/s3-request-presigner": "^3.1152.0",
     "@botcenter/contracts": "workspace:*",
     "@botcenter/whatsapp-provider": "workspace:*",
     "@fastify/helmet": "^13.2.0",
