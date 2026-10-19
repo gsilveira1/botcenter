@@ -128,9 +128,9 @@ describe('env templates', () => {
 
   /** The variables that compose.prod.yml sets in `environment:` of the api and worker services. */
   function composeAppVariables(): Set<string> {
-    const compose = readYaml<{ services: Record<string, { environment?: Record<string, string> }> }>(
-      'infra/compose/compose.prod.yml',
-    );
+    const compose = readYaml<{
+      services: Record<string, { environment?: Record<string, string> }>;
+    }>('infra/compose/compose.prod.yml');
     return new Set(
       ['api', 'worker'].flatMap((name) => Object.keys(compose.services[name]?.environment ?? {})),
     );

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Allows HTTPS (443, and 80 with --allow-http) only from the current Cloudflare IP ranges.
+# Allows HTTPS (443, and 80 with --allow-http) only from the current Cloudflare IP ranges, and limits the
+# egress of the Evolution API container (SEC-01).
 # Idempotent: each run builds the same rules from the lists. systemd runs it after each boot and
 # every 6 hours (botcenter-cloudflare-firewall.timer).
 #
@@ -18,6 +19,14 @@
 #
 # The script also writes the Caddy `trusted_proxies` snippet (CADDY_SNIPPET) and reloads Caddy when
 # the ranges change.
+#
+# Evolution egress (backend docker-user, IPv4; chain BOTCENTER-EVO): the Evolution API downloads the
+# media URLs of the clients and follows redirects. From its fixed addresses (EVOLUTION_SOURCE_IPS), it
+# can connect only to EVOLUTION_ALLOWED_DESTINATIONS (PostgreSQL, Redis, the API webhook port) in the
+# private ranges. EVOLUTION_DENIED_RANGES (link-local with the metadata service, RFC 1918, CGNAT of
+# Tailscale) get REJECT. The internet stays open (WhatsApp, media). The addresses are fixed in
+# infra/compose/compose.prod.yml. Traffic between two containers of one bridge passes DOCKER-USER only
+# with net.bridge.bridge-nf-call-iptables=1, so the script loads br_netfilter and sets it.
 # Safety: when a list is empty, too short, or has a line that is not a CIDR, the script keeps the
 # current rules, sends an alert, and exits 1.
 set -euo pipefail
@@ -33,6 +42,10 @@ BACKENDS="${FIREWALL_BACKENDS:-docker-user}"
 ALLOW_HTTP="${ALLOW_HTTP:-false}"
 DRY_RUN=false
 CHAIN=BOTCENTER-CF
+EVO_CHAIN=BOTCENTER-EVO
+EVOLUTION_SOURCE_IPS="${EVOLUTION_SOURCE_IPS-10.203.1.30,10.203.2.30}"
+EVOLUTION_ALLOWED_DESTINATIONS="${EVOLUTION_ALLOWED_DESTINATIONS-10.203.1.10:5432,10.203.1.11:6379,10.203.1.20:3000}"
+EVOLUTION_DENIED_RANGES="${EVOLUTION_DENIED_RANGES-169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -104,10 +117,15 @@ v4="$(fetch_ranges "$CF_IPS_V4_URL" 4 10)"
 v6="$(fetch_ranges "$CF_IPS_V6_URL" 6 5)"
 log "Cloudflare ranges: $(wc -l <<<"$v4") IPv4, $(wc -l <<<"$v6") IPv6; ports: ${ports[*]}"
 
-# remove_chain CMD NAME : removes every jump to the chain NAME from DOCKER-USER, then the chain.
+# remove_chain CMD NAME : removes every jump to the chain NAME from DOCKER-USER (also the jumps with a
+# source match), then the chain.
 remove_chain() {
-  local cmd="$1" name="$2"
-  while "$cmd" -D DOCKER-USER -j "$name" 2>/dev/null; do :; done
+  local cmd="$1" name="$2" rule
+  while IFS= read -r rule; do
+    [[ -n "$rule" ]] || continue
+    # shellcheck disable=SC2086 # The rule is a list of iptables arguments.
+    "$cmd" ${rule/#-A /-D }
+  done < <("$cmd" -S DOCKER-USER 2>/dev/null | grep -E -- "-j ${name}\$" || true)
   if "$cmd" -n -L "$name" >/dev/null 2>&1; then
     "$cmd" -F "$name"
     "$cmd" -X "$name"
@@ -162,6 +180,83 @@ apply_docker_user() {
   remove_chain "$cmd" "$CHAIN"
   "$cmd" -E "$new" "$CHAIN"
   log "$cmd: chain $CHAIN has ${#rules[@]} rules (public interface $iface)"
+}
+
+# --- Backend: docker-user, Evolution egress (IPv4 only: the networks of the stack have no IPv6) ----
+IPV4='([0-9]{1,3}\.){3}[0-9]{1,3}'
+
+# csv_items NAME PATTERN : prints the items of the comma list in the variable NAME; stops on a bad item.
+csv_items() {
+  local name="$1" pattern="$2" item
+  local -a items
+  IFS=',' read -r -a items <<<"${!name}"
+  for item in "${items[@]}"; do
+    if [[ ! "$item" =~ ^${pattern}$ ]]; then
+      log_error "$name has a bad item: '$item'"
+      return 1
+    fi
+    printf '%s\n' "$item"
+  done
+}
+
+apply_evolution_egress() {
+  if [[ -z "$EVOLUTION_SOURCE_IPS" ]]; then
+    log_error "EVOLUTION_SOURCE_IPS is empty: the egress of the Evolution API has no limit (SEC-01)"
+    return 1
+  fi
+  local sources allowed denied item rules=()
+  sources="$(csv_items EVOLUTION_SOURCE_IPS "$IPV4")"
+  allowed="$(csv_items EVOLUTION_ALLOWED_DESTINATIONS "${IPV4}:[0-9]{1,5}")"
+  denied="$(csv_items EVOLUTION_DENIED_RANGES "${IPV4}/[0-9]{1,2}")"
+  rules+=("-A $EVO_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN")
+  while IFS= read -r item; do
+    rules+=("-A $EVO_CHAIN -d ${item%:*} -p tcp --dport ${item##*:} -j RETURN")
+  done <<<"$allowed"
+  while IFS= read -r item; do
+    rules+=("-A $EVO_CHAIN -d $item -j REJECT --reject-with icmp-admin-prohibited")
+  done <<<"$denied"
+  rules+=("-A $EVO_CHAIN -j RETURN")
+  local jumps=()
+  while IFS= read -r item; do
+    jumps+=("-I DOCKER-USER 1 -s $item -j $EVO_CHAIN")
+  done <<<"$sources"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    printf 'iptables %s\n' "-N $EVO_CHAIN" "-F $EVO_CHAIN" "${rules[@]}" "${jumps[@]}"
+    return 0
+  fi
+  ensure_bridge_netfilter || return 1
+  local new="${EVO_CHAIN}-NEW" rule
+  remove_chain iptables "$new"
+  iptables -N "$new"
+  for rule in "${rules[@]}"; do
+    # shellcheck disable=SC2086 # The rule is a list of iptables arguments.
+    iptables ${rule/-A $EVO_CHAIN /-A $new }
+  done
+  for rule in "${jumps[@]}"; do
+    # shellcheck disable=SC2086 # The rule is a list of iptables arguments.
+    iptables ${rule/%-j $EVO_CHAIN/-j $new}
+  done
+  remove_chain iptables "$EVO_CHAIN"
+  iptables -E "$new" "$EVO_CHAIN"
+  log "iptables: chain $EVO_CHAIN has ${#rules[@]} rules for the sources $(tr '\n' ' ' <<<"$sources")"
+}
+
+# The rules of BOTCENTER-EVO see the traffic between two containers of one bridge network only when
+# the bridge sends it through iptables.
+ensure_bridge_netfilter() {
+  local sysctl_file=/proc/sys/net/bridge/bridge-nf-call-iptables
+  if [[ ! -e "$sysctl_file" ]]; then
+    modprobe br_netfilter 2>/dev/null || true
+  fi
+  if [[ ! -e "$sysctl_file" ]]; then
+    log_error "the kernel module br_netfilter is not available: the Evolution egress rules do not apply inside a bridge"
+    return 1
+  fi
+  if [[ "$(<"$sysctl_file")" != 1 ]]; then
+    sysctl -q -w net.bridge.bridge-nf-call-iptables=1
+    log "set net.bridge.bridge-nf-call-iptables=1"
+  fi
 }
 
 # --- Backend: hcloud ----------------------------------------------------------------------------
@@ -241,6 +336,7 @@ for backend in "${backend_list[@]}"; do
       [[ "$DRY_RUN" == true ]] || require_commands iptables ip6tables ip
       apply_docker_user iptables "$v4"
       apply_docker_user ip6tables "$v6"
+      apply_evolution_egress
       ;;
     hcloud) apply_hcloud ;;
     *)

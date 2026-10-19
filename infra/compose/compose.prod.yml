@@ -9,8 +9,14 @@
 # Rules of this file (architecture, section "Segurança"):
 #   - Caddy is the only service with `ports:`. Uptime Kuma is on 127.0.0.1:3001 through Caddy (SSH tunnel).
 #   - Networks: `edge` (Caddy, API, Uptime Kuma), `internal` (no route to the internet: API, workers,
-#     Evolution, PostgreSQL, Redis, Alloy, migrate), and `egress` (internet access without inbound ports:
-#     workers for the client webhooks and R2, Evolution for WhatsApp, Alloy for Grafana Cloud).
+#     Evolution, PostgreSQL, Redis, migrate), `egress` (internet access without inbound ports: workers for
+#     the client webhooks and R2, Evolution for WhatsApp, Alloy for Grafana Cloud), and `metrics` (no route
+#     to the internet: the metrics listeners of the API and the workers, and Alloy).
+#   - SEC-01: the metrics listeners bind to the address of the service on `metrics` only, so the Evolution
+#     API (a redirect of a media URL) cannot read them. infra/host/firewall-cloudflare.sh also limits the
+#     egress of the Evolution container with the fixed addresses below (DOCKER-USER, chain BOTCENTER-EVO).
+#     Fixed addresses are below .128; Docker gives the dynamic addresses from .128 (`ip_range`).
+#     The 10.203.0.0/16 subnets must not overlap a network of the host (for example a Hetzner private network).
 #   - Every service: `no-new-privileges`, `cap_drop: [ALL]`, a memory limit, a health check, and JSON logs
 #     with the Compose service label (Alloy reads the log files; no Docker socket in any container).
 #   - Secrets come from env files in ${BOTCENTER_ENV_DIR:-/etc/botcenter} (mode 600, made by
@@ -114,6 +120,8 @@ services:
     environment:
       ROLE: api
       PORT: '3000'
+      API_METRICS_PORT: '9465'
+      API_METRICS_HOST: 10.203.3.20
       NODE_OPTIONS: --max-old-space-size=${API_HEAP_MB:-384}
     depends_on:
       migrate:
@@ -123,8 +131,12 @@ services:
       evolution:
         condition: service_started
     networks:
-      - edge
-      - internal
+      edge: {}
+      internal:
+        # The Evolution egress rules allow this address on port 3000 (the provider webhook).
+        ipv4_address: 10.203.1.20
+      metrics:
+        ipv4_address: 10.203.3.20
     healthcheck:
       test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:3000/health/live']
       interval: 15s
@@ -141,6 +153,7 @@ services:
     environment:
       ROLE: worker
       WORKER_METRICS_PORT: '9464'
+      WORKER_METRICS_HOST: 10.203.3.21
       NODE_OPTIONS: --max-old-space-size=${WORKER_HEAP_MB:-768}
     depends_on:
       migrate:
@@ -150,10 +163,13 @@ services:
       evolution:
         condition: service_started
     networks:
-      - internal
-      - egress
+      internal: {}
+      egress: {}
+      metrics:
+        ipv4_address: 10.203.3.21
     healthcheck:
-      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:9464/health/live']
+      # The listener binds to the metrics address only (SEC-01).
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://10.203.3.21:9464/health/live']
       interval: 15s
       timeout: 3s
       retries: 3
@@ -181,8 +197,11 @@ services:
     volumes:
       - evolution-instances:/evolution/instances
     networks:
-      - internal
-      - egress
+      # Fixed addresses: the egress rules of infra/host/firewall-cloudflare.sh match them (SEC-01).
+      internal:
+        ipv4_address: 10.203.1.30
+      egress:
+        ipv4_address: 10.203.2.30
     healthcheck:
       # A request without the key must get 401. Do not use `GET /`: it calls web.whatsapp.com.
       test:
@@ -235,7 +254,8 @@ services:
     shm_size: 256m
     stop_grace_period: 60s
     networks:
-      - internal
+      internal:
+        ipv4_address: 10.203.1.10
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U postgres -d botcenter']
       interval: 10s
@@ -273,7 +293,8 @@ services:
       - redis-data:/data
     stop_grace_period: 30s
     networks:
-      - internal
+      internal:
+        ipv4_address: 10.203.1.11
     healthcheck:
       test: ['CMD-SHELL', 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
       interval: 10s
@@ -336,8 +357,9 @@ services:
       - /var/lib/botcenter/metrics:/host/textfile:ro
     tmpfs:
       - /tmp:size=16m,mode=1777
+    # `metrics` to scrape the API and the workers, `egress` for Grafana Cloud. Not on `internal`.
     networks:
-      - internal
+      - metrics
       - egress
     healthcheck:
       test:
@@ -360,8 +382,23 @@ networks:
   internal:
     name: botcenter-internal
     internal: true
+    ipam:
+      config:
+        - subnet: 10.203.1.0/24
+          ip_range: 10.203.1.128/25
   egress:
     name: botcenter-egress
+    ipam:
+      config:
+        - subnet: 10.203.2.0/24
+          ip_range: 10.203.2.128/25
+  metrics:
+    name: botcenter-metrics
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.203.3.0/24
+          ip_range: 10.203.3.128/25
 
 volumes:
   postgres-data:

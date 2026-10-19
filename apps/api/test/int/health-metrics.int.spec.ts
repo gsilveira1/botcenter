@@ -1,5 +1,6 @@
 import { ProviderError } from '@botcenter/whatsapp-provider';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { MetricsService } from '../../src/metrics/metrics.service';
 import { QueuesService } from '../../src/queues/queues.service';
 import { TestHarness } from '../support/harness';
 
@@ -40,16 +41,20 @@ describe('health', () => {
   });
 });
 
-describe('GET /metrics', () => {
-  it('answers a private address with the Prometheus text and the fixed metric names', async () => {
+describe('metrics (SEC-01)', () => {
+  it('has no /metrics route on the HTTP port of the API, also for a private address', async () => {
+    // The API serves /metrics on a separate listener (API_METRICS_PORT) on the `metrics` network only,
+    // so a redirect through the Evolution API cannot read it on port 3000.
+    const response = await h.inject({ method: 'GET', url: '/metrics' });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('renders the Prometheus text with the fixed metric names', async () => {
     await h
       .get(QueuesService)
       .add('outbound', 'send', { tenantId: 't', messageId: 'm', instanceId: 'i' });
     await h.inject({ method: 'GET', url: '/health/live' });
-    const response = await h.inject({ method: 'GET', url: '/metrics' });
-    expect(response.statusCode).toBe(200);
-    expect(response.headers['content-type']).toContain('text/plain');
-    const text = response.body;
+    const text = await h.get(MetricsService).render();
     for (const name of [
       'http_request_duration_seconds_bucket',
       'botcenter_queue_size{',
@@ -61,23 +66,5 @@ describe('GET /metrics', () => {
     }
     expect(text).toMatch(/botcenter_queue_size\{queue="outbound",state="waiting",role="api"\} 1/);
     expect(text).toContain('route="/health/live"');
-  });
-
-  it('refuses a public client address with 404', async () => {
-    const response = await h.inject({
-      method: 'GET',
-      url: '/metrics',
-      headers: { 'x-forwarded-for': '203.0.113.50' },
-    });
-    expect(response.statusCode).toBe(404);
-  });
-
-  it('does not trust a private address that a public client puts in X-Forwarded-For', async () => {
-    const response = await h.inject({
-      method: 'GET',
-      url: '/metrics',
-      headers: { 'x-forwarded-for': '10.0.0.5, 203.0.113.50' },
-    });
-    expect(response.statusCode).toBe(404);
   });
 });

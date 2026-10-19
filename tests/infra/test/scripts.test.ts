@@ -195,6 +195,34 @@ describe('firewall-cloudflare.sh --dry-run', () => {
     expect(result.stdout).toMatch(/^trusted_proxies static 10\.0\.0\.0\/16 .* 2001:db8:5::\/48$/m);
   });
 
+  it('limits the egress of the Evolution API container (SEC-01)', async () => {
+    const result = await run(
+      repoPath('infra/host/firewall-cloudflare.sh'),
+      ['--dry-run'],
+      lists(v4, v6),
+    );
+    expect(result.code, result.stderr).toBe(0);
+    const evo = result.stdout.split('\n').filter((line) => line.includes('BOTCENTER-EVO'));
+    expect(evo).toEqual([
+      'iptables -N BOTCENTER-EVO',
+      'iptables -F BOTCENTER-EVO',
+      'iptables -A BOTCENTER-EVO -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN',
+      'iptables -A BOTCENTER-EVO -d 10.203.1.10 -p tcp --dport 5432 -j RETURN',
+      'iptables -A BOTCENTER-EVO -d 10.203.1.11 -p tcp --dport 6379 -j RETURN',
+      'iptables -A BOTCENTER-EVO -d 10.203.1.20 -p tcp --dport 3000 -j RETURN',
+      'iptables -A BOTCENTER-EVO -d 169.254.0.0/16 -j REJECT --reject-with icmp-admin-prohibited',
+      'iptables -A BOTCENTER-EVO -d 10.0.0.0/8 -j REJECT --reject-with icmp-admin-prohibited',
+      'iptables -A BOTCENTER-EVO -d 172.16.0.0/12 -j REJECT --reject-with icmp-admin-prohibited',
+      'iptables -A BOTCENTER-EVO -d 192.168.0.0/16 -j REJECT --reject-with icmp-admin-prohibited',
+      'iptables -A BOTCENTER-EVO -d 100.64.0.0/10 -j REJECT --reject-with icmp-admin-prohibited',
+      'iptables -A BOTCENTER-EVO -j RETURN',
+      'iptables -I DOCKER-USER 1 -s 10.203.1.30 -j BOTCENTER-EVO',
+      'iptables -I DOCKER-USER 1 -s 10.203.2.30 -j BOTCENTER-EVO',
+    ]);
+    // IPv4 only: the networks of the stack have no IPv6.
+    expect(result.stdout).not.toContain('ip6tables -N BOTCENTER-EVO');
+  });
+
   it('opens port 80 too with --allow-http', async () => {
     const result = await run(
       repoPath('infra/host/firewall-cloudflare.sh'),

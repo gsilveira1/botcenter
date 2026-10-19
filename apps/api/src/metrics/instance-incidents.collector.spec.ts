@@ -29,7 +29,10 @@ describe('InstanceIncidentsCollector (ARCH-15)', () => {
       vi.useRealTimers();
     }
     const [recent, stale] = count.mock.calls.map(([args]) => args.where);
-    expect(recent).toMatchObject({ deletedAt: null, status: { in: ['connecting', 'disconnected'] } });
+    expect(recent).toMatchObject({
+      deletedAt: null,
+      status: { in: ['connecting', 'disconnected'] },
+    });
     expect(now.getTime() - recent!.disconnectedSince.lte.getTime()).toBe(2 * 60_000);
     expect(now.getTime() - stale!.disconnectedSince.lte.getTime()).toBe(24 * 3_600_000);
   });

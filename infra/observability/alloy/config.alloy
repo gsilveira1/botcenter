@@ -2,7 +2,7 @@
 //
 // Logs:    the JSON log files of the Docker containers (no Docker socket) -> Grafana Cloud Loki.
 //          Labels: service (Compose service), stream, host, environment.
-// Metrics: the API (api:3000/metrics), the workers (worker:9464/metrics), the host (node exporter
+// Metrics: the API (api:9465/metrics), the workers (worker:9464/metrics), the host (node exporter
 //          built in), and the text file metrics of the host scripts (backup, restore test)
 //          -> Grafana Cloud Prometheus (remote write).
 // Credentials: alloy.env (GRAFANA_CLOUD_*). No secret in this file.
@@ -97,9 +97,11 @@ loki.write "grafana_cloud" {
 // Metrics
 // ---------------------------------------------------------------------------------------------
 
+// The metrics listeners are on the `metrics` network only (SEC-01). The HTTP port of the API has no
+// /metrics route.
 prometheus.scrape "botcenter_api" {
 	job_name        = "botcenter-api"
-	targets         = [{"__address__" = "api:3000", "service" = "api"}]
+	targets         = [{"__address__" = "api:9465", "service" = "api"}]
 	metrics_path    = "/metrics"
 	scrape_interval = "15s"
 	forward_to      = [prometheus.relabel.common.receiver]

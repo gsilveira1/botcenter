@@ -152,7 +152,7 @@ Optional: SOPS and age. Keep the env files encrypted in a private infrastructure
    sudo bash -c 'set -a; . /etc/botcenter/firewall.env; set +a; /opt/botcenter/infra/host/firewall-cloudflare.sh'
    ```
 
-   With `FIREWALL_BACKENDS=docker-user`, the rules are in the `DOCKER-USER` chain of the host. For a second layer, also set `hcloud` and `HCLOUD_TOKEN` (a token of the Bot Center project). The Hetzner Cloud Firewall then allows only 443 from Cloudflare, UDP 41641 (Tailscale), and ICMP.
+   With `FIREWALL_BACKENDS=docker-user`, the rules are in the `DOCKER-USER` chain of the host. The script also adds the chain `BOTCENTER-EVO`: the egress rules of the Evolution container (SEC-01). It loads `br_netfilter` and sets `net.bridge.bridge-nf-call-iptables=1`, because the traffic between two containers of one network passes `DOCKER-USER` only with this setting. For a second layer, also set `hcloud` and `HCLOUD_TOKEN` (a token of the Bot Center project). The Hetzner Cloud Firewall then allows only 443 from Cloudflare, UDP 41641 (Tailscale), and ICMP.
 3. Initialize the restic repository (one time):
 
    ```sh
@@ -264,6 +264,8 @@ Use a test number, never a personal number of a team member.
 4. Deploy. Use one of the two methods:
    - Over Tailscale SSH: `sudo /opt/botcenter/infra/scripts/deploy.sh vX.Y.Z ghcr.io/<owner>/botcenter-api:vX.Y.Z@sha256:<digest>`.
    - With the `deploy` job of the `Release` workflow (Actions > Release > Run workflow, with the tag and the image). The environment `production` needs the approval of a reviewer.
+   CAUTION: When a release changes the Compose networks (for example the fixed subnets of `v0.1.0`), `up -d` cannot change a network that exists. Stop the stack first in a period with low traffic: `bc down` (the volumes stay), then run `deploy.sh`.
+
 5. The script stops with an alert when a health check fails. Then do a rollback: run `deploy.sh` with the previous tag and the previous image (the alert and `/etc/botcenter/compose.env.previous` have it).
 6. The workers stop with a graceful shutdown (`stop_grace_period: 30s`, `SHUTDOWN_TIMEOUT_MS=25000`): they finish the current job and return the rest to the queue.
 
@@ -391,7 +393,7 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 
    CAUTION: Between the start of Docker and the firewall timer, port 443 accepts every source. The Hetzner Cloud Firewall (backend `hcloud`) closes this gap.
 
-4. Make sure that `bc ps` shows every service healthy and that `sudo iptables -S DOCKER-USER` shows the jump to `BOTCENTER-CF`.
+4. Make sure that `bc ps` shows every service healthy and that `sudo iptables -S DOCKER-USER` shows the jumps to `BOTCENTER-CF` and `BOTCENTER-EVO`.
 
 ## 17. Incident procedures
 
@@ -458,7 +460,7 @@ The Evolution API got `200` for these events, so it does not send them again. Ea
 
 The worker process answers, but its readiness probe fails: it cannot reach PostgreSQL or Redis. No job runs.
 
-1. Read the report of the probe: `bc exec worker wget -qO- http://127.0.0.1:9464/health/ready`. Each check shows `up` or `down` and an error code.
+1. Read the report of the probe: `bc exec worker wget -qO- http://10.203.3.21:9464/health/ready`. Each check shows `up` or `down` and an error code.
 2. Check the dependency: `bc ps postgres redis`, then `bc logs --since 15m postgres` or `bc logs --since 15m redis`.
 3. Fix the dependency. If the dependency is healthy and the probe still fails, restart the worker: `bc restart worker`.
 
@@ -466,7 +468,7 @@ The worker process answers, but its readiness probe fails: it cannot reach Postg
 
 ### 18.1 Metrics of the application
 
-The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard use these names. The API scrapes on `api:3000/metrics`; the workers on `worker:9464/metrics`. Caddy never forwards `/metrics`.
+The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard use these names. Alloy scrapes the API on `api:9465/metrics` and the workers on `worker:9464/metrics`, on the `metrics` network only. The HTTP port of the API (3000) has no `/metrics` route (SEC-01).
 
 | Metric | Type | Labels |
 | --- | --- | --- |
@@ -500,10 +502,13 @@ Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_backup_las
 | 443 (and 80 in ACME mode) | host, Caddy | Cloudflare ranges only (`DOCKER-USER` and Hetzner Cloud Firewall) |
 | 127.0.0.1:3001 | host, Caddy to Uptime Kuma | the host only (SSH tunnel) |
 | 22 | host, sshd | `tailscale0` only (ufw) |
-| 3000 | `api` | Caddy (`edge`), Evolution webhook and Alloy (`internal`) |
-| 9464 | `worker` | Alloy (`internal`) |
+| 3000 | `api` | Caddy and Uptime Kuma (`edge`), the Evolution webhook (`internal`) |
+| 9465 | `api`, address `10.203.3.20` | Alloy (`metrics`): `/metrics` only |
+| 9464 | `worker`, address `10.203.3.21` | Alloy (`metrics`): `/metrics`, `/health/live`, `/health/ready` |
 | 8080 | `evolution` | `api` and `worker` (`internal`) |
 | 5432, 6379 | `postgres`, `redis` | the `internal` network only |
+
+The fixed addresses are in `infra/compose/compose.prod.yml` (subnets `10.203.1.0/24` `internal`, `10.203.2.0/24` `egress`, `10.203.3.0/24` `metrics`). The chain `BOTCENTER-EVO` of `DOCKER-USER` limits the Evolution container (`10.203.1.30`, `10.203.2.30`): in the private ranges and `169.254.0.0/16`, it can connect only to PostgreSQL, Redis, and port 3000 of the API. The internet stays open.
 
 ### 18.4 Settings of `api.env`
 

@@ -15,6 +15,7 @@ import { WebhooksApiModule } from '../../src/webhooks/webhooks.module';
 import { CoreWorkerRoot } from '../support/core-worker-root';
 import { TestHarness } from '../support/harness';
 import { insertDelivery, messageStatusData } from '../support/webhooks';
+import { MetricsService } from '../../src/metrics/metrics.service';
 
 const DAY = 86_400_000;
 
@@ -321,7 +322,8 @@ describe('operational alerts (check-alerts)', () => {
       },
     });
     expect(await alerts.checkOutboxLag(new Date())).toBe('opened');
-    const metrics = await h.inject({ method: 'GET', url: '/metrics' });
+    // SEC-01: the API serves /metrics on its own listener; the test reads the registry directly.
+    const metrics = { body: await h.get(MetricsService).render() };
     expect(metrics.body).toMatch(/botcenter_outbox_lag_seconds\{role="api"\} 1[2-9]\d/);
     await h.prisma.outboxEvent.update({
       where: { id: event.id },

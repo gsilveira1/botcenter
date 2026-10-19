@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   const server = await startWorkerMetricsServer(
     app.get(MetricsService),
     env.WORKER_METRICS_PORT,
-    '::',
+    env.WORKER_METRICS_HOST,
     readiness,
   );
   logger.info({ env: env.NODE_ENV }, 'worker started');

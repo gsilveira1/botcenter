@@ -3,9 +3,8 @@ import type { WhatsAppProvider } from '@botcenter/whatsapp-provider';
 import type { FastifyReply } from 'fastify';
 import type { Redis } from 'ioredis';
 import { z } from 'zod';
-import { Internal, Public } from '../auth/decorators';
+import { Public } from '../auth/decorators';
 import { getLogger } from '../logging/logger';
-import { MetricsService } from '../metrics/metrics.service';
 import { ApiOperation, ApiResponse } from '../openapi/openapi.decorators';
 import { PrismaService } from '../prisma/prisma.service';
 import { WHATSAPP_PROVIDER } from '../provider/provider.tokens';
@@ -29,7 +28,7 @@ export type ReadinessReport = z.infer<typeof ReadinessSchema>;
 /**
  * `GET /health/live`: the process answers (Compose restarts it otherwise).
  * `GET /health/ready`: PostgreSQL, Redis, and the provider answer. 503 when one check fails.
- * `GET /metrics`: Prometheus text, internal network only.
+ * `/metrics` is not here: the API serves it on its own listener (`API_METRICS_PORT`, SEC-01).
  */
 @Controller()
 export class HealthController {
@@ -39,7 +38,6 @@ export class HealthController {
     private readonly prisma: PrismaService,
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(WHATSAPP_PROVIDER) private readonly provider: WhatsAppProvider,
-    private readonly metrics: MetricsService,
   ) {}
 
   @Get('health/live')
@@ -80,12 +78,5 @@ export class HealthController {
       void reply.status(503);
     }
     return { status: healthy ? 'ok' : 'unavailable', checks };
-  }
-
-  @Get('metrics')
-  @Internal({ secret: false })
-  async scrape(@Res({ passthrough: true }) reply: FastifyReply): Promise<string> {
-    void reply.header('content-type', this.metrics.contentType);
-    return this.metrics.render();
   }
 }

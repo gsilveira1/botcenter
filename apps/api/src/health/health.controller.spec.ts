@@ -3,8 +3,6 @@ import type { WhatsAppProvider } from '@botcenter/whatsapp-provider';
 import type { FastifyReply } from 'fastify';
 import type { Redis } from 'ioredis';
 import { describe, expect, it, vi } from 'vitest';
-import { testEnv } from '../../test/support/env';
-import { MetricsService } from '../metrics/metrics.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { HealthController, ReadinessSchema, runCheck } from './health.controller';
 
@@ -37,7 +35,6 @@ describe('HealthController.ready', () => {
       {
         ping: vi.fn(async () => Promise.reject(new ProviderError('unavailable', 'down'))),
       } as unknown as WhatsAppProvider,
-      new MetricsService(testEnv()),
     );
     const reply = { status: vi.fn() };
     const report = await controller.ready(reply as unknown as FastifyReply);

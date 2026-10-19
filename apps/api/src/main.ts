@@ -3,6 +3,8 @@ import { createApiApp } from './bootstrap';
 import { createShutdown } from './common/shutdown';
 import { loadEnv } from './config/env';
 import { createRootLogger, flushLogs, getLogger } from './logging/logger';
+import { closeServer, startApiMetricsServer } from './metrics/metrics-listener';
+import { MetricsService } from './metrics/metrics.service';
 
 /**
  * Entry point of the API process: `node dist/main.js` with `ROLE=api`.
@@ -20,9 +22,18 @@ async function main(): Promise<void> {
   const app = await createApiApp();
   await app.listen({ port: env.PORT, host: '::' });
   logger.info({ port: env.PORT, env: env.NODE_ENV }, 'api listening');
+  // SEC-01: /metrics is only on this listener (the `metrics` network), not on the HTTP port.
+  const metricsServer = await startApiMetricsServer(
+    app.get(MetricsService),
+    env.API_METRICS_PORT,
+    env.API_METRICS_HOST,
+  );
 
   const shutdown = createShutdown({
-    close: () => app.close(),
+    close: async () => {
+      await closeServer(metricsServer);
+      await app.close();
+    },
     timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
     logger,
   });
