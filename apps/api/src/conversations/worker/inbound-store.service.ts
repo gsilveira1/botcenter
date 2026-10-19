@@ -39,6 +39,14 @@ type Row = {
   botPending: boolean;
 };
 
+interface NewRow {
+  conversationId: string | null;
+  botPending: boolean;
+  content: StoredInboundContent;
+  /** The receive time of the provider webhook: the order key of the bot step. */
+  receivedAt: Date;
+}
+
 function toStored(row: Row): StoredInbound {
   return {
     messageId: row.id,
@@ -103,33 +111,18 @@ export class InboundStoreService {
       where: { instanceId_contact: { instanceId: instance.instanceId, contact: event.from } },
       select: { id: true, handoff: true },
     });
-    const content = toStoredContent(event.content);
+    const row: NewRow = {
+      conversationId: conversation?.id ?? null,
+      botPending: instance.botId !== null && conversation?.handoff !== true,
+      content: toStoredContent(event.content),
+      receivedAt,
+    };
     try {
-      const row = await db.$transaction(async (scoped) => {
-        const tx = scoped as unknown as TransactionClient;
-        const created = await tx.message.create({
-          data: {
-            tenantId: instance.tenantId,
-            instanceId: instance.instanceId,
-            conversationId: conversation?.id ?? null,
-            direction: 'inbound',
-            type: content.type,
-            status: 'received',
-            contact: event.from,
-            content: content as unknown as Prisma.InputJsonObject,
-            providerMessageId: event.providerMessageId,
-            botPending: instance.botId !== null && conversation?.handoff !== true,
-            createdAt: receivedAt,
-          },
-          select: ROW_SELECT,
-        });
-        if (content.type !== 'media') {
-          await this.writeEvent(tx, instance, toStored(created), undefined);
-        }
-        return created;
-      });
+      const stored = await db.$transaction((scoped) =>
+        this.createRow(scoped as unknown as TransactionClient, instance, event, row),
+      );
       this.metrics.inboundMessage();
-      return toStored(row);
+      return stored;
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         // A parallel attempt of the same event stored it first.
@@ -140,6 +133,36 @@ export class InboundStoreService {
       }
       throw error;
     }
+  }
+
+  /** The row and, for a message without media, its `message.received` event (one transaction). */
+  private async createRow(
+    tx: TransactionClient,
+    instance: InstanceContext,
+    event: MessageReceivedEvent,
+    row: NewRow,
+  ): Promise<StoredInbound> {
+    const created = await tx.message.create({
+      data: {
+        tenantId: instance.tenantId,
+        instanceId: instance.instanceId,
+        conversationId: row.conversationId,
+        direction: 'inbound',
+        type: row.content.type,
+        status: 'received',
+        contact: event.from,
+        content: row.content as unknown as Prisma.InputJsonObject,
+        providerMessageId: event.providerMessageId,
+        botPending: row.botPending,
+        createdAt: row.receivedAt,
+      },
+      select: ROW_SELECT,
+    });
+    const stored = toStored(created);
+    if (row.content.type !== 'media') {
+      await this.writeEvent(tx, instance, stored, undefined);
+    }
+    return stored;
   }
 
   private async completeMedia(

@@ -62,6 +62,11 @@ interface PlanInput {
   now: Date;
 }
 
+/** The timer belongs to this conversation, and the bot (not a human) runs it. */
+function isTimerTarget(conversation: ConversationRecord, job: TimerJob): boolean {
+  return conversation.id === job.conversationId && !conversation.handoff;
+}
+
 /** All attempts of a step conflicted. The job fails this attempt and BullMQ retries it with backoff. */
 export class ConversationConflictError extends Error {
   constructor(conversationKey: string) {
@@ -255,12 +260,7 @@ export class ConversationStepService {
     job: TimerJob,
   ): Promise<StepPlan | null> {
     const conversation = await this.loader.load(instance, contact, { fresh: true });
-    if (
-      !conversation ||
-      conversation.id !== job.conversationId ||
-      conversation.handoff ||
-      !instance.botId
-    ) {
+    if (!conversation || !isTimerTarget(conversation, job) || !instance.botId) {
       this.metrics.timers.inc({ result: 'stale' });
       return null;
     }
