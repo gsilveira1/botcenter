@@ -94,9 +94,9 @@ tests:
   - name: the disk above 80 % fires after 5 minutes
     interval: 1m
     input_series:
-      - series: 'node_filesystem_avail_bytes{mountpoint="/", fstype="ext4", host="h1"}'
+      - series: 'botcenter_host_filesystem_avail_bytes{mountpoint="/", host="h1"}'
         values: '15x10'
-      - series: 'node_filesystem_size_bytes{mountpoint="/", fstype="ext4", host="h1"}'
+      - series: 'botcenter_host_filesystem_size_bytes{mountpoint="/", host="h1"}'
         values: '100x10'
     alert_rule_test:
       - eval_time: 7m
@@ -106,7 +106,6 @@ tests:
               severity: critical
               host: h1
               mountpoint: /
-              fstype: ext4
             exp_annotations:
               summary: 'Disk usage is 85% on h1'
               description: 'Runbook: "Incident: disk full".'

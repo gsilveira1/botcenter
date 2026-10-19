@@ -70,6 +70,8 @@ describe('alerts.yml', () => {
       'botcenter_backup_last_run_success',
       'botcenter_backup_last_success_timestamp_seconds',
       'botcenter_restore_test_last_success_timestamp_seconds',
+      'botcenter_host_filesystem_avail_bytes',
+      'botcenter_host_filesystem_size_bytes',
     ]);
     const used = rules.flatMap((rule) => rule.expr.match(/\bbotcenter_[a-z_]+/g) ?? []);
     expect(used.length).toBeGreaterThan(0);

@@ -132,11 +132,26 @@ describe('host scripts: alerts', () => {
     expect(discord.requests).toHaveLength(1);
   });
 
+  it('disk-check.sh writes the disk metrics of the host for Alloy (SEC-07: no host root mount)', async () => {
+    const metrics = tempDir('disk-metrics');
+    const result = await run(repoPath('infra/backup/disk-check.sh'), [], {
+      DISK_ALERT_PERCENT: '100',
+      STATE_DIR: tempDir('disk-state'),
+      METRICS_DIR: metrics,
+      ALERT_DISCORD_WEBHOOK_URL: `${discord.url}/discord`,
+    });
+    expect(result.code, result.stderr).toBe(0);
+    const text = readFileSync(path.join(metrics, 'botcenter_host_disk.prom'), 'utf8');
+    expect(text).toMatch(/^botcenter_host_filesystem_size_bytes\{mountpoint="\/"\} [1-9]\d*$/m);
+    expect(text).toMatch(/^botcenter_host_filesystem_avail_bytes\{mountpoint="\/"\} \d+$/m);
+  });
+
   it('disk-check.sh alerts once above the threshold and again only after the repeat interval', async () => {
     const state = tempDir('state');
     const env = {
       DISK_ALERT_PERCENT: '1',
       STATE_DIR: state,
+      METRICS_DIR: tempDir('disk-check-metrics'),
       ALERT_DISCORD_WEBHOOK_URL: `${discord.url}/discord`,
       BACKUP_HOST_TAG: 'test-host',
     };

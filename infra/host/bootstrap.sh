@@ -8,7 +8,8 @@
 #   1. Packages: Docker Engine and the Compose plugin (Docker apt repository), Tailscale (Tailscale apt
 #      repository), ufw, fail2ban, unattended-upgrades, jq, curl, git, ipset.
 #   2. Automatic security updates (unattended-upgrades, no automatic reboot).
-#   3. Docker daemon: json-file logs with rotation, live-restore, no-new-privileges by default.
+#   3. Docker daemon: json-file logs with rotation (default for other containers), live-restore,
+#      no-new-privileges by default. journald limits for the Bot Center containers (journald log driver).
 #   4. Kernel: vm.overcommit_memory=1 (Redis AOF rewrite), swappiness 10, a swap file (SWAP_SIZE), and
 #      br_netfilter with net.bridge.bridge-nf-call-iptables=1 (the Evolution egress rules, SEC-01).
 #   5. Tailscale: `tailscale up` with TAILSCALE_AUTHKEY when the host is not logged in.
@@ -114,6 +115,19 @@ EOF
   systemctl restart docker
 fi
 systemctl enable --now docker >/dev/null
+# The Bot Center containers log to journald (compose.prod.yml, SEC-07). All of them write through
+# docker.service, so the rate limit of one service applies to all: raise it. Keep the logs 14 days at most.
+if [[ "$(write_if_changed /etc/systemd/journald.conf.d/90-botcenter.conf 0644 <<'EOF'
+[Journal]
+Storage=persistent
+SystemMaxUse=2G
+MaxRetentionSec=14day
+RateLimitIntervalSec=30s
+RateLimitBurst=100000
+EOF
+)" == changed ]]; then
+  systemctl restart systemd-journald
+fi
 
 # --- 4. Kernel and swap --------------------------------------------------------------------------
 log "sysctl and swap"

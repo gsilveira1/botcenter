@@ -17,19 +17,22 @@
 #     egress of the Evolution container with the fixed addresses below (DOCKER-USER, chain BOTCENTER-EVO).
 #     Fixed addresses are below .128; Docker gives the dynamic addresses from .128 (`ip_range`).
 #     The 10.203.0.0/16 subnets must not overlap a network of the host (for example a Hetzner private network).
-#   - Every service: `no-new-privileges`, `cap_drop: [ALL]`, a memory limit, a health check, and JSON logs
-#     with the Compose service label (Alloy reads the log files; no Docker socket in any container).
+#   - Every service: `no-new-privileges`, `cap_drop: [ALL]`, a memory limit, a health check, and logs to
+#     journald with the Compose labels. Alloy reads the journal (SEC-07): it never reads
+#     /var/lib/docker/containers, because config.v2.json there has the environment (secrets) of each
+#     container. No Docker socket in any container.
 #   - Secrets come from env files in ${BOTCENTER_ENV_DIR:-/etc/botcenter} (mode 600, made by
 #     infra/scripts/gen-secrets.sh). No secret is in this file or in an image.
 name: botcenter
 
 x-logging: &logging
-  driver: json-file
+  # journald keeps the logs (size and age: /etc/systemd/journald.conf.d/90-botcenter.conf of
+  # infra/host/bootstrap.sh). `docker compose logs` still works. The labels become the journal fields
+  # COM_DOCKER_COMPOSE_SERVICE and COM_DOCKER_COMPOSE_PROJECT, which Alloy reads.
+  driver: journald
   options:
-    max-size: 20m
-    max-file: '5'
-    # Alloy reads `attrs` of each line to get the service name (no Docker socket).
     labels: com.docker.compose.service,com.docker.compose.project
+    tag: '{{.Name}}'
 
 x-hardening: &hardening
   restart: unless-stopped
@@ -331,14 +334,17 @@ services:
   alloy:
     <<: *hardening
     image: grafana/alloy:v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
-    # Root without capabilities: it reads the root-owned Docker log files (owner permission, no
-    # DAC_OVERRIDE). Every host path is read-only. No Docker socket.
-    user: '0:0'
+    # SEC-07: the user `alloy` of the image (uid 473), not root. The group of the journal files
+    # (systemd-journal) is the only extra right. As a non-root user without capabilities, it cannot read
+    # /proc/<pid>/environ of the other containers. No host root, no Docker data, no /etc/botcenter.
+    user: '473:473'
+    group_add:
+      - ${BOTCENTER_JOURNAL_GID:?Set BOTCENTER_JOURNAL_GID in compose.env}
     read_only: true
     command:
       - run
       - /etc/alloy/config.alloy
-      - --storage.path=/var/lib/alloy-data
+      - --storage.path=/var/lib/alloy/data
       - --server.http.listen-addr=127.0.0.1:12345
       - --disable-reporting
     env_file:
@@ -347,13 +353,15 @@ services:
       BOTCENTER_ENVIRONMENT: ${BOTCENTER_ENVIRONMENT:-production}
     volumes:
       - ../observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
-      - alloy-data:/var/lib/alloy-data
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      # The image directory belongs to uid 473, so the new volume does too.
+      - alloy-data:/var/lib/alloy/data
+      # The container logs (journald log driver). Mode 2755/0640, group systemd-journal.
+      - /var/log/journal:/var/log/journal:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      # Host CPU, memory, network, and disk I/O (node exporter). World-readable files only for uid 473.
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
-      - /:/host/root:ro
-      - /run/udev/data:/run/udev/data:ro
-      # Text file metrics of the host scripts (backup, restore test).
+      # Text file metrics of the host scripts (backup, restore test, disk usage).
       - /var/lib/botcenter/metrics:/host/textfile:ro
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -412,4 +420,5 @@ volumes:
   uptime-kuma-data:
     name: botcenter-uptime-kuma-data
   alloy-data:
-    name: botcenter-alloy-data
+    # A new name: the volume of the root Alloy (botcenter-alloy-data) belongs to root.
+    name: botcenter-alloy-storage

@@ -16,6 +16,9 @@ interface Service {
   depends_on?: Record<string, { condition: string }>;
   deploy?: { resources?: { limits?: { memory?: string } } };
   environment?: Record<string, string>;
+  group_add?: string[];
+  logging?: { driver?: string; options?: Record<string, string> };
+  stop_grace_period?: string;
 }
 interface ComposeFile {
   services: Record<string, Service>;
@@ -105,6 +108,58 @@ describe('compose.prod.yml', () => {
     for (const name of ['api', 'worker', 'migrate', 'caddy', 'postgres', 'redis']) {
       expect(prod.services[name]!.user, name).toMatch(/^[1-9]\d*:[1-9]\d*$/);
     }
+  });
+
+  describe('Alloy least privilege (SEC-07)', () => {
+    /** The host path of a bind mount (`/a:/b:ro`), or undefined for a named volume. */
+    function hostPath(volume: string): string | undefined {
+      const source = volume.split(':')[0]!;
+      return source.startsWith('/') ? source : undefined;
+    }
+
+    it('mounts no host root, no Docker data, and no secret directory in any service', () => {
+      for (const [name, service] of services) {
+        for (const volume of service.volumes ?? []) {
+          const source = hostPath(volume);
+          if (!source) continue;
+          expect(source, name).not.toBe('/');
+          expect(source, name).not.toMatch(/^\/var\/lib\/docker(\/|$)/);
+          expect(source, name).not.toMatch(/^\/etc\/botcenter\/?$/);
+          expect(source, name).not.toMatch(/^\/(root|home)(\/|$)/);
+        }
+      }
+    });
+
+    it('runs Alloy as its image user with read-only mounts of the journal, /proc, /sys, and the text files only', () => {
+      const alloy = prod.services.alloy!;
+      expect(alloy.user).toBe('473:473');
+      expect(alloy.group_add).toEqual([
+        '${BOTCENTER_JOURNAL_GID:?Set BOTCENTER_JOURNAL_GID in compose.env}',
+      ]);
+      const hostMounts = (alloy.volumes ?? []).filter((volume) => hostPath(volume));
+      expect(hostMounts.sort()).toEqual(
+        [
+          '/etc/machine-id:/etc/machine-id:ro',
+          '/proc:/host/proc:ro',
+          '/sys:/host/sys:ro',
+          '/var/lib/botcenter/metrics:/host/textfile:ro',
+          '/var/log/journal:/var/log/journal:ro',
+        ].sort(),
+      );
+      const alloyConfig = readRepoFile('infra/observability/alloy/config.alloy');
+      expect(alloyConfig).toContain('loki.source.journal');
+      expect(alloyConfig).not.toContain('/var/lib/docker/containers');
+      expect(alloyConfig).not.toContain('rootfs_path');
+    });
+
+    it('sends the container logs to journald with the Compose labels', () => {
+      for (const [name, service] of services) {
+        expect(service.logging?.driver, name).toBe('journald');
+        expect(service.logging?.options?.labels, name).toBe(
+          'com.docker.compose.service,com.docker.compose.project',
+        );
+      }
+    });
   });
 
   it('mounts no Docker socket', () => {

@@ -114,7 +114,7 @@ ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `
    Run the unit tests of the rules first: `docker run --rm -v "$PWD/infra/observability/prometheus:/r:ro" -w /r --entrypoint promtool prom/prometheus:v3.15.0 test rules alerts.test.yml`.
 4. Alerting > Contact points: add a Discord contact point with the webhook of the operations channel. Send `severity=critical` and `severity=warning` to it.
 5. Dashboards > Import: upload `infra/observability/grafana/botcenter-dashboard.json`. Select the Prometheus data source of the stack.
-6. Explore > Loki: make sure that the label `service` shows `api`, `worker`, `evolution`, and the other services.
+6. Explore > Loki: make sure that the label `service` shows `api`, `worker`, `evolution`, and the other services. Alloy reads the container logs from the journal of the host (journald log driver). On the host, `journalctl COM_DOCKER_COMPOSE_SERVICE=api -n 20` shows the same lines.
 
 ## 6. Secrets
 
@@ -135,6 +135,7 @@ ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `
    WARNING: Without `RESTIC_PASSWORD`, no backup can be restored. A lost host also loses this file.
 
 4. Make sure that the modes are correct: `sudo ls -l /etc/botcenter`. Each `.env` file must be `-rw-------` and belong to root.
+5. Make sure that `compose.env` has `BOTCENTER_JOURNAL_GID` (the number of `getent group systemd-journal`). Alloy runs as uid 473 and gets only this group, so it reads the container logs and no secret (SEC-07).
 
 Optional: SOPS and age. Keep the env files encrypted in a private infrastructure repository:
 
@@ -434,7 +435,7 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 
 ### 17.5 Disk full (alerts `HostDiskUsageHigh`, disk-check)
 
-1. Find the large directories: `sudo du -xh --max-depth=2 /var/lib/docker | sort -h | tail`.
+1. Find the large directories: `sudo du -xh --max-depth=2 /var/lib/docker | sort -h | tail`. Check the journal too: `journalctl --disk-usage` (limit 2 GB, `/etc/systemd/journald.conf.d/90-botcenter.conf`).
 2. Remove the old images: `sudo docker image prune -a --filter "until=168h"`.
 
    CAUTION: Do not run `docker volume prune` or `docker system prune --volumes`. They delete the PostgreSQL and Redis data.
@@ -484,7 +485,7 @@ The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard 
 | `botcenter_worker_ready` | gauge | none (worker process: 1 when PostgreSQL and Redis answer) |
 | `http_request_duration_seconds` | histogram | `method`, `route`, `status_code` |
 
-Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_backup_last_run_success`, `botcenter_backup_last_success_timestamp_seconds`, `botcenter_backup_duration_seconds`, `botcenter_backup_dump_size_bytes{database}`, `botcenter_restore_test_last_run_success`, `botcenter_restore_test_last_success_timestamp_seconds`.
+Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_host_filesystem_size_bytes{mountpoint}` and `botcenter_host_filesystem_avail_bytes{mountpoint}` (`disk-check.sh`, every 15 minutes; Alloy has no mount of the host root), `botcenter_backup_last_run_success`, `botcenter_backup_last_success_timestamp_seconds`, `botcenter_backup_duration_seconds`, `botcenter_backup_dump_size_bytes{database}`, `botcenter_restore_test_last_run_success`, `botcenter_restore_test_last_success_timestamp_seconds`.
 
 ### 18.2 Timers
 

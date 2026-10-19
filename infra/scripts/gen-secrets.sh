@@ -79,6 +79,8 @@ if [[ "$FORCE" != true ]]; then
 fi
 
 hex32() { openssl rand -hex 32; }
+# The gid of systemd-journal, or CHANGE_ME (the script then lists it) on a machine without the group.
+journal_gid() { getent group systemd-journal | cut -d: -f3 | grep . || echo CHANGE_ME; }
 base64_32() { openssl rand -base64 32 | tr -d '\n'; }
 
 declare -A secrets=(
@@ -92,6 +94,8 @@ declare -A secrets=(
   [API_KEY_PEPPER]="$(hex32)"
   [DATA_ENCRYPTION_KEY]="$(base64_32)"
   [RESTIC_PASSWORD]="$(hex32)"
+  # Not a secret: the group of the journal files of this host (Alloy reads the container logs).
+  [BOTCENTER_JOURNAL_GID]="$(journal_gid)"
 )
 
 umask 077

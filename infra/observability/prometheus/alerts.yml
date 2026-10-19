@@ -13,7 +13,8 @@
 #   botcenter_webhook_deliveries_total{result}  counter: webhook delivery attempts (succeeded, failed, dead)
 #   botcenter_rate_limit_denied_total{scope}    counter: denied requests (key, instance)
 #   http_request_duration_seconds               histogram: API latency (method, route, status_code)
-# Metrics of the host: node exporter of Alloy, and the text files of infra/backup.
+# Metrics of the host: node exporter of Alloy, and the text files of infra/backup (backup, restore test,
+# and the disk usage botcenter_host_filesystem_* of disk-check.sh; Alloy has no host root mount).
 # Severities: critical (act now, Discord with mention), warning (act in working hours), info.
 
 groups:
@@ -218,11 +219,12 @@ groups:
   - name: botcenter-host
     rules:
       - alert: HostDiskUsageHigh
+        # disk-check.sh writes the values every 15 minutes.
         expr: |
           1 - (
-            node_filesystem_avail_bytes{mountpoint="/", fstype!~"tmpfs|overlay"}
+            botcenter_host_filesystem_avail_bytes{mountpoint="/"}
             /
-            node_filesystem_size_bytes{mountpoint="/", fstype!~"tmpfs|overlay"}
+            botcenter_host_filesystem_size_bytes{mountpoint="/"}
           ) > 0.8
         for: 5m
         labels:
