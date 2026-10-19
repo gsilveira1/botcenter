@@ -280,7 +280,7 @@ Use a test number, never a personal number of a team member.
    CAUTION: When a release changes the Compose networks (for example the fixed subnets of `v0.1.0`), `up -d` cannot change a network that exists. Stop the stack first in a period with low traffic: `bc down` (the volumes stay), then run `deploy.sh`.
 
 5. The script stops with an alert when a health check fails. Then do a rollback: run `deploy.sh` with the previous tag and the previous image (the alert and `/etc/botcenter/compose.env.previous` have it).
-6. The workers stop with a graceful shutdown (`stop_grace_period: 30s`, `SHUTDOWN_TIMEOUT_MS=25000`): they finish the current job and return the rest to the queue.
+6. The workers stop with a graceful shutdown (`stop_grace_period: 110s`, `WORKER_SHUTDOWN_TIMEOUT_MS=100000`): they finish the current job and return the rest to the queue. The API uses `stop_grace_period: 30s` and `SHUTDOWN_TIMEOUT_MS=25000`. A deploy can take up to 2 minutes while a long job ends.
 
 ## 12. Update the Evolution API
 
@@ -542,7 +542,9 @@ The fixed addresses are in `infra/compose/compose.prod.yml` (subnets `10.203.1.0
 | `BODY_LIMIT_BYTES` | `1048576` | Maximum JSON body of a request. |
 | `INTERNAL_WEBHOOK_BODY_LIMIT_BYTES` | `8388608` | Maximum body of the Evolution webhook. |
 | `KEEP_ALIVE_TIMEOUT_MS` | `65000` | Keep it above the upstream keep-alive of Caddy (60 s). |
-| `SHUTDOWN_TIMEOUT_MS` | `25000` | Maximum time of a graceful shutdown. Keep it below `stop_grace_period` of the service. |
+| `SHUTDOWN_TIMEOUT_MS` | `25000` | Graceful shutdown of the API process. Keep it below `stop_grace_period` of `api` (30 s). |
+| `WORKER_SHUTDOWN_TIMEOUT_MS` | `100000` | Graceful shutdown of the worker process (ARCH-11). It must be longer than the longest job, or the worker does not start. Keep it below `stop_grace_period` of `worker` (110 s). |
+| `S3_REQUEST_TIMEOUT_MS` | `15000` | Time limit of one object storage request (maximum 120000). |
 | `EVOLUTION_INTERACTIVE_FALLBACK` | `text` | `text` sends buttons and lists as a numbered menu; `native` sends the native messages. |
 | `EVOLUTION_REQUEST_TIMEOUT_MS` | `10000` | Time limit of a state, create, logout, delete, or ping request. |
 | `EVOLUTION_CONNECT_TIMEOUT_MS` | `20000` | Time limit of a connect request. |
@@ -555,7 +557,13 @@ The fixed addresses are in `infra/compose/compose.prod.yml` (subnets `10.203.1.0
 | `OUTBOUND_BUCKET_BURST` | `3` | Size of the send token bucket of each instance (at most its rate). |
 | `OUTBOUND_WARMUP_DAYS` | `7` | Days from the first connection of a number to the full send rate. `0` or `1` turns the warm-up off. |
 | `OUTBOUND_WARMUP_START_PERCENT` | `20` | Send rate on the first day of the warm-up, in percent of the full rate. |
-| `MEDIA_UPLOAD_URL_TTL_SECONDS` | `900` | Validity of the upload URL of `POST /v1/media` (maximum 3600). |
+| `MEDIA_UPLOAD_URL_TTL_SECONDS` | `300` | Validity of the upload URL of `POST /v1/media` (maximum 3600). Short, because the URL can be used again while it is valid. |
+| `MEDIA_READ_URL_TTL_SECONDS` | `900` | Validity of the download URL of `GET /v1/media/{id}`. |
+| `MEDIA_UPLOADS_PER_DAY` | `1000` | `POST /v1/media` calls of one tenant in one UTC day. |
+| `MEDIA_MAX_BYTES_PER_TENANT` | `5368709120` | Sum of the declared sizes of the live outbound media of one tenant (5 GiB). |
+| `OUTBOUND_MAX_QUEUED_PER_INSTANCE` | `1000` | `queued` outbound rows of one instance. Above it, `POST /v1/messages` answers 429 `QUOTA_EXCEEDED`. |
+| `OUTBOUND_QUEUED_MAX_AGE_SECONDS` | `86400` | Maximum age of a `queued` row; the sweep writes an older row as `failed` (`expired`). |
+| `OUTBOUND_MEDIA_DOWNLOAD_TIMEOUT_MS` | `20000` | Time limit of the download of a client media `url` by the worker (maximum 30000). |
 | `MEDIA_SEND_URL_TTL_SECONDS` | `900` | Validity of the download URL that the Evolution API gets for a media message. |
 | `INBOUND_MEDIA_DOWNLOAD_CONCURRENCY` | `2` | Inbound media downloads of one worker at the same time (maximum 10; about 60 MiB each). |
 | `BOT_INBOUND_LIMIT_PER_MINUTE` | `30` | Messages of one contact on one instance in one minute that the bot answers. The worker stores the others. |

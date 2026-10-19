@@ -51,7 +51,7 @@ x-app: &app
     - /tmp:size=64m,mode=1777
   env_file:
     - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/api.env
-  # Above SHUTDOWN_TIMEOUT_MS of api.env (25 s): the workers finish the current job.
+  # Above SHUTDOWN_TIMEOUT_MS of api.env (25 s). The worker has its own value (ARCH-11).
   stop_grace_period: 30s
 
 services:
@@ -160,6 +160,9 @@ services:
       WORKER_METRICS_PORT: '9464'
       WORKER_METRICS_HOST: 10.203.3.21
       NODE_OPTIONS: --max-old-space-size=${WORKER_HEAP_MB:-768}
+    # ARCH-11: above WORKER_SHUTDOWN_TIMEOUT_MS of api.env (100 s), which is above the longest job (a send
+    # with its state read, or a media download). Docker sends SIGKILL only after this time.
+    stop_grace_period: 110s
     depends_on:
       migrate:
         condition: service_completed_successfully

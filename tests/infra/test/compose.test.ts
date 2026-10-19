@@ -199,6 +199,20 @@ describe('compose.prod.yml', () => {
     expect(total).toBeLessThan(4096);
   });
 
+  it('stops each process later than its shutdown budget (ARCH-11)', () => {
+    const api = readEnvFile(readRepoFile('infra/env/api.env.example'));
+    const seconds = (value: string | undefined) => Number(/^(\d+)s$/.exec(value ?? '')?.[1]);
+    const budget = (name: string) => Number(api.get(name)) / 1000;
+    // The worker refuses to start when its budget is shorter than the longest job plus 5 s.
+    expect(budget('WORKER_SHUTDOWN_TIMEOUT_MS')).toBeGreaterThanOrEqual(100);
+    expect(seconds(prod.services.worker!.stop_grace_period)).toBeGreaterThanOrEqual(
+      budget('WORKER_SHUTDOWN_TIMEOUT_MS') + 5,
+    );
+    expect(seconds(prod.services.api!.stop_grace_period)).toBeGreaterThanOrEqual(
+      budget('SHUTDOWN_TIMEOUT_MS') + 5,
+    );
+  });
+
   it('starts api and worker only after a successful migration', () => {
     for (const name of ['api', 'worker']) {
       expect(prod.services[name]!.depends_on?.migrate?.condition).toBe(
