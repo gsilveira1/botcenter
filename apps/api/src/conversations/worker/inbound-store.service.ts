@@ -14,7 +14,7 @@ import { ConversationMetrics } from '../conversation-metrics';
 import { eventContentFields, toStoredContent } from '../inbound-content';
 import type { StoredInboundContent } from '../inbound-content';
 import { InboundMediaService } from './inbound-media.service';
-import type { InboundMediaResult } from './inbound-media.service';
+import type { InboundMediaFile, InboundMediaResult } from './inbound-media.service';
 import type { InstanceContext } from './instance-context';
 
 /** An inbound `messages` row after the store step. */
@@ -212,15 +212,7 @@ export class InboundStoreService {
     const now = new Date();
     const result = await this.media.copy(
       instance,
-      {
-        messageId: stored.messageId,
-        providerMessageId,
-        mimeType: stored.content.mime_type,
-        ...(stored.content.file_name === undefined ? {} : { fileName: stored.content.file_name }),
-        ...(stored.content.file_length === undefined
-          ? {}
-          : { declaredBytes: stored.content.file_length }),
-      },
+      mediaFile(stored.messageId, providerMessageId, stored.content),
       now,
     );
     const content: StoredInboundContent = {
@@ -266,6 +258,21 @@ export class InboundStoreService {
       },
     });
   }
+}
+
+/** The media copy input of a stored inbound media row. */
+function mediaFile(
+  messageId: string,
+  providerMessageId: string,
+  content: Extract<StoredInboundContent, { type: 'media' }>,
+): InboundMediaFile {
+  return {
+    messageId,
+    providerMessageId,
+    mimeType: content.mime_type,
+    ...(content.file_name === undefined ? {} : { fileName: content.file_name }),
+    ...(content.file_length === undefined ? {} : { declaredBytes: content.file_length }),
+  };
 }
 
 function mediaOf(result: InboundMediaResult): InboundMedia | undefined {

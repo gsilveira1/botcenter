@@ -194,22 +194,32 @@ export class InboundMediaService {
         },
       };
     } catch (error) {
-      if (!isStorageError(error)) {
-        throw error;
-      }
-      this.logger.error(
-        { err: error },
-        'inbound media upload failed; the event goes out without media',
-      );
-      await this.release(instance, mediaId, now);
-      void this.alerts.notify({
-        severity: 'warning',
-        title: 'Inbound media not stored in the media bucket',
-        details: { tenant_id: instance.tenantId, error: (error as Error).name },
-        dedupeKey: 'inbound-media-upload',
-      });
+      await this.uploadFailed(instance, mediaId, now, error);
       return null;
     }
+  }
+
+  /** A bucket error: log, alert, and release the reserved row. Any other error is a bug: throw it. */
+  private async uploadFailed(
+    instance: InstanceContext,
+    mediaId: string,
+    now: Date,
+    error: unknown,
+  ): Promise<void> {
+    if (!isStorageError(error)) {
+      throw error;
+    }
+    this.logger.error(
+      { err: error },
+      'inbound media upload failed; the event goes out without media',
+    );
+    await this.release(instance, mediaId, now);
+    void this.alerts.notify({
+      severity: 'warning',
+      title: 'Inbound media not stored in the media bucket',
+      details: { tenant_id: instance.tenantId, error: (error as Error).name },
+      dedupeKey: 'inbound-media-upload',
+    });
   }
 
   /**

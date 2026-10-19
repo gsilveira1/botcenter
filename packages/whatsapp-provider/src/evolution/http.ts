@@ -151,53 +151,54 @@ export class EvolutionHttp {
     }
 
     const started = Date.now();
-    let response: HttpResponseLike;
-    let text: string;
     try {
-      response = await this.fetchFn(`${this.baseUrl}${call.path}`, init);
-      text =
+      const response = await this.fetchFn(`${this.baseUrl}${call.path}`, init);
+      const text =
         call.maxResponseBytes === undefined
           ? await response.text()
           : await readCapped(response, call.maxResponseBytes, controller);
+      return { status: response.status, body: parseBody(text) };
     } catch (error) {
-      if (error instanceof ResponseTooLargeError) {
-        this.options.logger.warn(
-          {
-            operation: call.operation,
-            route: call.route,
-            instance_name: call.instanceName,
-            duration_ms: Date.now() - started,
-            limit_bytes: error.limitBytes,
-            declared_bytes: error.declaredBytes,
-          },
-          'Evolution response is larger than the limit; the request was aborted',
-        );
-        throw error;
-      }
-      const timeout = isTimeout(error);
-      this.options.logger.warn(
-        {
-          operation: call.operation,
-          route: call.route,
-          instance_name: call.instanceName,
-          duration_ms: Date.now() - started,
-          timeout,
-          error_name: error instanceof Error ? error.name : typeof error,
-          error_code: (error as { cause?: { code?: string } } | undefined)?.cause?.code,
-        },
-        'Evolution request failed before a response',
-      );
-      throw new ProviderError(
-        'unavailable',
-        timeout
-          ? `Evolution ${call.operation} timed out after ${call.timeoutMs} ms`
-          : `Evolution ${call.operation} failed: network error`,
-        undefined,
-        { cause: error },
-      );
+      throw this.failedBeforeResponse(call, error, Date.now() - started);
     }
+  }
 
-    return { status: response.status, body: parseBody(text) };
+  /**
+   * A request without a complete response: a `ResponseTooLargeError` stays as it is; a network error or
+   * a timeout becomes `ProviderError` (`unavailable`). Both write a log line.
+   */
+  private failedBeforeResponse(call: EvolutionCall, error: unknown, durationMs: number): Error {
+    const fields = {
+      operation: call.operation,
+      route: call.route,
+      instance_name: call.instanceName,
+      duration_ms: durationMs,
+    };
+    if (error instanceof ResponseTooLargeError) {
+      this.options.logger.warn(
+        { ...fields, limit_bytes: error.limitBytes, declared_bytes: error.declaredBytes },
+        'Evolution response is larger than the limit; the request was aborted',
+      );
+      return error;
+    }
+    const timeout = isTimeout(error);
+    this.options.logger.warn(
+      {
+        ...fields,
+        timeout,
+        error_name: error instanceof Error ? error.name : typeof error,
+        error_code: (error as { cause?: { code?: string } } | undefined)?.cause?.code,
+      },
+      'Evolution request failed before a response',
+    );
+    return new ProviderError(
+      'unavailable',
+      timeout
+        ? `Evolution ${call.operation} timed out after ${call.timeoutMs} ms`
+        : `Evolution ${call.operation} failed: network error`,
+      undefined,
+      { cause: error },
+    );
   }
 
   /** Builds a `ProviderError` and writes the technical details (masked) to the log. */

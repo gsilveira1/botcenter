@@ -71,6 +71,10 @@ function isTimerTarget(conversation: ConversationRecord, job: TimerJob): boolean
   return conversation.id === job.conversationId && !conversation.handoff;
 }
 
+function timerInput(job: TimerJob, now: Date) {
+  return { timerState: job.state, timerVersion: job.conversationVersion, now };
+}
+
 /** All attempts of a step conflicted. The job fails this attempt and BullMQ retries it with backoff. */
 export class ConversationConflictError extends Error {
   constructor(conversationKey: string) {
@@ -287,15 +291,8 @@ export class ConversationStepService {
         conversation.botVersion,
       );
       const timeoutsInRow = conversation.timeoutsInRow + 1;
-      const result = this.limitTimeouts(
-        handleTimeout(bot.definition, toSnapshot(conversation), {
-          timerState: job.state,
-          timerVersion: job.conversationVersion,
-          now,
-        }),
-        timeoutsInRow,
-        conversation.id,
-      );
+      const fired = handleTimeout(bot.definition, toSnapshot(conversation), timerInput(job, now));
+      const result = this.limitTimeouts(fired, timeoutsInRow, conversation.id);
       this.metrics.timers.inc({ result: result.persist ? 'fired' : 'stale' });
       const plan = await this.plan({
         instance,

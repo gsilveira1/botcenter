@@ -24,6 +24,23 @@ const HANDOFF_ATTEMPTS = 3;
 
 class HandoffConflict extends Error {}
 
+/** The transition row and event of a handoff: the state does not change. */
+function handoffTransition(row: ConversationWithResponseData, handoff: boolean) {
+  return {
+    tenantId: row.tenantId,
+    conversationId: row.id,
+    instanceId: row.instanceId,
+    externalRef: row.instance.externalRef,
+    contact: row.contact,
+    botSlug: row.bot.slug,
+    botVersion: row.botVersion,
+    fromState: row.state,
+    toState: row.state,
+    trigger: 'handoff' as const,
+    handoff,
+  };
+}
+
 /**
  * `GET /v1/conversations/{id}` and `POST /v1/conversations/{id}/handoff`. A handoff is a write that is
  * not from the engine: it increments `version`, so the pending timer and any running worker step become
@@ -102,19 +119,7 @@ export class ConversationsService {
       if (updated.count !== 1) {
         throw new HandoffConflict();
       }
-      await recordTransition(tx, this.outbox, {
-        tenantId: auth.tenantId,
-        conversationId: row.id,
-        instanceId: row.instanceId,
-        externalRef: row.instance.externalRef,
-        contact: row.contact,
-        botSlug: row.bot.slug,
-        botVersion: row.botVersion,
-        fromState: row.state,
-        toState: row.state,
-        trigger: 'handoff',
-        handoff,
-      });
+      await recordTransition(tx, this.outbox, handoffTransition(row, handoff));
       await this.audit.record(
         {
           tenantId: auth.tenantId,
