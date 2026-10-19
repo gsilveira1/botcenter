@@ -12,8 +12,9 @@ import { AlertService } from '../services/alert.service';
 import { CONCURRENCY_ENV } from './queue-names';
 import { DEFAULT_JOB_OPTIONS } from './queues.service';
 import type { JobPayloads, QueueName } from './queue-names';
+import { RetryLaterError } from './retry-later';
 
-export { DelayedError, UnrecoverableError };
+export { DelayedError, RetryLaterError, UnrecoverableError };
 
 /**
  * True for the error that a processor throws after `job.moveToDelayed(...)`. The job waits again; this is
@@ -25,7 +26,9 @@ export function isDelayedError(error: unknown): boolean {
 
 /**
  * The function that processes one job. Throw to retry (with backoff); throw `UnrecoverableError` to fail at
- * once. Call `job.moveToDelayed(timestamp, job.token)` and throw `DelayedError` to wait without an attempt.
+ * once. Call `job.moveToDelayed(timestamp, job.token)` and throw `DelayedError` to wait without an attempt,
+ * or throw `RetryLaterError` (a processor without access to the job, for example an inbound handler):
+ * the factory then moves the job back to the delayed set.
  */
 export type JobProcessor<N extends QueueName> = (job: Job<JobPayloads[N]>) => Promise<unknown>;
 
@@ -116,7 +119,8 @@ export class WorkerFactory implements OnModuleDestroy {
         const result = await processor(job);
         this.metrics.jobsTotal.inc({ queue, result: 'completed' });
         return result;
-      } catch (error) {
+      } catch (caught) {
+        const error = caught instanceof RetryLaterError ? await this.delay(job, caught) : caught;
         if (isDelayedError(error)) {
           this.metrics.jobsTotal.inc({ queue, result: 'delayed' });
           throw error;
@@ -131,6 +135,16 @@ export class WorkerFactory implements OnModuleDestroy {
         stop();
       }
     });
+  }
+
+  /** Moves the job back to the delayed set. BullMQ does not count a `DelayedError` as an attempt. */
+  private async delay(job: Job, error: RetryLaterError): Promise<DelayedError> {
+    await job.moveToDelayed(Date.now() + error.delayMs, job.token);
+    this.logger.debug(
+      { job_name: job.name, delay_ms: error.delayMs, reason: error.reason },
+      'job delayed',
+    );
+    return new DelayedError();
   }
 
   private async onFailed<N extends QueueName>(

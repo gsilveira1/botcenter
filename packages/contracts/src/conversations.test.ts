@@ -26,6 +26,11 @@ describe('ConversationResponse', () => {
     expect(ConversationResponse.safeParse(valid).success).toBe(true);
   });
 
+  it('accepts a handoff transition (the state stays)', () => {
+    const handoff = { from_state: 'ask_name', to_state: 'ask_name', trigger: 'handoff', at: NOW };
+    expect(ConversationResponse.safeParse({ ...valid, transitions: [handoff] }).success).toBe(true);
+  });
+
   it('refuses more than 50 transitions', () => {
     const transitions = Array.from({ length: 51 }, () => valid.transitions[0]);
     expect(ConversationResponse.safeParse({ ...valid, transitions }).success).toBe(false);

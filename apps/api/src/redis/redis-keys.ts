@@ -17,4 +17,7 @@ export const redisKeys = {
   incidents: () => 'bc:incidents',
   /** Send token bucket of an instance (messages slice, Lua script). */
   outboundBucket: (instanceId: string) => `bc:bucket:instance:${instanceId}`,
+  /** Hot state of one conversation. `contactKey` is a hash of the contact phone, never the phone. */
+  conversation: (instanceId: string, contactKey: string) =>
+    `bc:conversation:${instanceId}:${contactKey}`,
 } as const;

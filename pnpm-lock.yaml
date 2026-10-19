@@ -32,6 +32,9 @@ importers:
       '@botcenter/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@botcenter/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       '@botcenter/whatsapp-provider':
         specifier: workspace:*
         version: link:../../packages/whatsapp-provider
