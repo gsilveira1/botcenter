@@ -19,6 +19,8 @@ export const ERROR_CODES = [
   'WEBHOOK_URL_FORBIDDEN',
   'PROVIDER_UNAVAILABLE',
   'INTERNAL',
+  /** A media `url` that resolves to a private, loopback, link-local, or metadata address (or does not resolve). */
+  'MEDIA_URL_FORBIDDEN',
 ] as const;
 
 export const ErrorCode = z.enum(ERROR_CODES);
@@ -43,6 +45,7 @@ export const ERROR_HTTP_STATUS = {
   WEBHOOK_URL_FORBIDDEN: 422,
   PROVIDER_UNAVAILABLE: 503,
   INTERNAL: 500,
+  MEDIA_URL_FORBIDDEN: 422,
 } as const satisfies Record<ErrorCode, number>;
 
 /** Prefix of the Problem Details `type` URI. */

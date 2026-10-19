@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { OnModuleInit } from '@nestjs/common';
-import type { Queue } from 'bullmq';
+import type { Job, Queue } from 'bullmq';
 import { MetricsService } from '../metrics/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueuesService } from './queues.service';
@@ -18,22 +18,39 @@ const INSTANCE_STATUSES = [
 const HEAD_JOBS = 20;
 
 /**
- * The age in seconds of the oldest job that waits for a worker (`waiting` and `prioritized`). A delayed
- * job is ready at timestamp + delay. The operational alerts use the same value as the gauge.
- * `ignoreNames` leaves out housekeeping jobs (for example the `sweep` job of the `outbound` queue), so
- * only the first jobs of each list are read.
+ * The time when a waiting job became ready, or `null` when it is not known. A job that went back to the
+ * delayed set keeps its ready time in `data.readyAt` (the send rate limit and the send order of the
+ * `outbound` queue, ARCH-10), because BullMQ keeps the creation time and sets the delay to 0 at the
+ * promotion. A retry after a failure has no known ready time, so it does not count.
+ */
+export function readyTime(job: Job): number | null {
+  const readyAt = (job.data as { readyAt?: unknown } | undefined)?.readyAt;
+  if (typeof readyAt === 'number') {
+    return readyAt;
+  }
+  if ((job.attemptsMade ?? 0) > 0) {
+    return null;
+  }
+  return job.timestamp + (job.opts.delay ?? 0);
+}
+
+/**
+ * The age in seconds of the oldest job that waits for a worker (`waiting` and `prioritized`), from the
+ * time when the job became ready (`readyTime`). The operational alerts use the same value as the gauge.
+ * `ignoreNames` leaves out housekeeping jobs (for example the `sweep` job of the `outbound` queue).
+ * Only the first jobs of each list are read.
  */
 export async function oldestWaitingDelaySeconds(
   queue: Queue,
   now = Date.now(),
   ignoreNames: readonly string[] = [],
 ): Promise<number> {
-  const end = ignoreNames.length > 0 ? HEAD_JOBS - 1 : 0;
   // The first jobs of each list in ascending order.
-  const firstJobs = (await queue.getJobs(['waiting', 'prioritized'], 0, end, true)).filter(
-    (job) => !ignoreNames.includes(job.name),
-  );
-  const readyAt = Math.min(now, ...firstJobs.map((job) => job.timestamp + (job.opts.delay ?? 0)));
+  const firstJobs = (
+    await queue.getJobs(['waiting', 'prioritized'], 0, HEAD_JOBS - 1, true)
+  ).filter((job) => !ignoreNames.includes(job.name));
+  const readyTimes = firstJobs.map(readyTime).filter((time): time is number => time !== null);
+  const readyAt = Math.min(now, ...readyTimes);
   return Math.max(0, (now - readyAt) / 1000);
 }
 

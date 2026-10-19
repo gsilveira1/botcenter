@@ -177,6 +177,48 @@ describe('ExternalHttpClient.send', () => {
   });
 });
 
+describe('ExternalHttpClient.getBinary (SEC-01)', () => {
+  it('downloads the bytes with a GET, the fixed User-Agent, and the media type of the answer', async () => {
+    receiver.next(respond(200, 'PDF bytes', { 'content-type': 'Application/PDF; charset=binary' }));
+    const response = await clientWith().getBinary({
+      url: `${receiver.url}/file.pdf`,
+      timeoutMs: 2_000,
+      maxBytes: 100,
+    });
+    expect(response).toEqual({
+      status: 200,
+      contentType: 'application/pdf',
+      body: Buffer.from('PDF bytes'),
+    });
+    const request = receiver.requests.at(-1);
+    expect(request).toMatchObject({ method: 'GET', url: '/file.pdf', body: '' });
+    expect(request?.headers['user-agent']).toBe(EXTERNAL_HTTP_USER_AGENT);
+    expect(request?.headers['content-length']).toBeUndefined();
+  });
+
+  it('refuses a body above the limit, does not follow a redirect, and applies the SSRF guard', async () => {
+    receiver.next(respond(200, 'z'.repeat(5_000)));
+    const large = await failure(
+      clientWith().getBinary({ url: receiver.url, timeoutMs: 2_000, maxBytes: 1_000 }),
+    );
+    expect(large.code).toBe('response_too_large');
+
+    receiver.next(respond(302, '', { location: 'http://169.254.169.254/' }));
+    const redirect = await clientWith().getBinary({
+      url: receiver.url,
+      timeoutMs: 2_000,
+      maxBytes: 1_000,
+    });
+    expect(redirect.status).toBe(302);
+
+    const strict = clientWith({ allowHttp: true, allowPrivate: false });
+    const forbidden = await failure(
+      strict.getBinary({ url: receiver.url, timeoutMs: 2_000, maxBytes: 1_000 }),
+    );
+    expect(forbidden.code).toBe('forbidden_address');
+  });
+});
+
 describe('ExternalHttpClient over HTTPS', () => {
   let tls: TlsMaterial;
   let secure: TestReceiver;

@@ -37,7 +37,8 @@ function changeData(change: StatusChange): Prisma.MessageUpdateManyMutationInput
  * The one writer of outbound status changes. In one transaction, it moves the status only forward (a
  * conditional update on the statuses before the new one, see `message-status.ts`) and writes the
  * `message.status` outbox event. Two workers that write the same change at the same time make one
- * change and one event. Returns false when the message has this status or a later one already.
+ * change and one event. A `sent` or `failed` change also counts
+ * `botcenter_instance_messages_total{instance_id,status}`. Returns false when the message has this status or a later one already.
  */
 @Injectable()
 export class MessageStatusWriter {
@@ -76,6 +77,12 @@ export class MessageStatusWriter {
     });
     if (changed) {
       this.metrics.messagesTotal.inc({ status: change.status });
+      if (change.status === 'sent' || change.status === 'failed') {
+        this.metrics.instanceMessagesTotal.inc({
+          instance_id: target.instanceId,
+          status: change.status,
+        });
+      }
     }
     return changed;
   }

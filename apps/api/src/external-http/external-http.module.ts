@@ -2,7 +2,7 @@ import { Global, Inject, Injectable, Module } from '@nestjs/common';
 import type { OnApplicationShutdown } from '@nestjs/common';
 import { ENV, isProduction } from '../config/env';
 import type { AppEnv } from '../config/env';
-import { EXTERNAL_HTTP } from '../ports/external-http.port';
+import { EXTERNAL_HTTP, EXTERNAL_HTTP_BINARY } from '../ports/external-http.port';
 import { ExternalHttpClient } from './external-http.client';
 import { DNS_RESOLVER, SsrfGuard, systemDnsResolver } from './ssrf-guard';
 import type { DnsResolver } from './ssrf-guard';
@@ -43,8 +43,9 @@ class ExternalHttpShutdown implements OnApplicationShutdown {
       inject: [SsrfGuard, ENV],
     },
     { provide: EXTERNAL_HTTP, useExisting: ExternalHttpClient },
+    { provide: EXTERNAL_HTTP_BINARY, useExisting: ExternalHttpClient },
     ExternalHttpShutdown,
   ],
-  exports: [SsrfGuard, ExternalHttpClient, EXTERNAL_HTTP],
+  exports: [SsrfGuard, ExternalHttpClient, EXTERNAL_HTTP, EXTERNAL_HTTP_BINARY],
 })
 export class ExternalHttpModule {}

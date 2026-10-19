@@ -15,6 +15,11 @@ export const INCIDENT_ALERT_AFTER_MS = 2 * 60_000;
 export const RECONCILE_AFTER_MS = 10 * 60_000;
 /** Maximum provider reads of one reconciliation run. */
 export const RECONCILE_BATCH = 50;
+/**
+ * Maximum `connected` instances that one run reads (part of `RECONCILE_BATCH`). A run every 5 minutes
+ * reads 240 instances in one hour; a lost `connecting` webhook is found within this cycle.
+ */
+export const RECONCILE_CONNECTED_BATCH = 20;
 /** Maximum instances that one alert lists. */
 const ALERT_LIST_MAX = 10;
 
@@ -53,7 +58,9 @@ function describe(rows: readonly IncidentRow[]): string {
  *   each incident gets one alert, also with many workers. When the incident ends (the status service
  *   clears `disconnectedSince`), the next run sends one recovery message.
  * - `reconcile`: reads the provider state of the instances that stay in an incident status, and
- *   corrects the status when a webhook was lost.
+ *   corrects the status when a webhook was lost. It also reads a sample of `connected` instances whose
+ *   last provider state is older than 10 minutes, so a lost `connected → connecting` webhook starts an
+ *   incident (and the alert) too.
  */
 @Injectable()
 export class ConnectionMonitorService {
@@ -102,18 +109,33 @@ export class ConnectionMonitorService {
   }
 
   async reconcile(now = new Date()): Promise<ReconcileResult> {
-    const rows = await this.prisma.instance.findMany({
+    const before = new Date(now.getTime() - RECONCILE_AFTER_MS);
+    // The rows with the oldest provider state go first, so each run reads different instances.
+    const order = [{ providerEventAt: { sort: 'asc', nulls: 'first' } }, { id: 'asc' }] as const;
+    const select = { id: true, tenantId: true, providerName: true } as const;
+    const incidents = await this.prisma.instance.findMany({
       where: {
         deletedAt: null,
         status: { in: [...INCIDENT_STATUSES] },
-        statusChangedAt: { lte: new Date(now.getTime() - RECONCILE_AFTER_MS) },
+        statusChangedAt: { lte: before },
         providerCreatedAt: { not: null },
       },
-      // The rows with the oldest provider state go first, so each run reads different instances.
-      orderBy: [{ providerEventAt: { sort: 'asc', nulls: 'first' } }, { id: 'asc' }],
-      take: RECONCILE_BATCH,
-      select: { id: true, tenantId: true, providerName: true },
+      orderBy: [...order],
+      take: RECONCILE_BATCH - RECONCILE_CONNECTED_BATCH,
+      select,
     });
+    const connected = await this.prisma.instance.findMany({
+      where: {
+        deletedAt: null,
+        status: 'connected',
+        providerCreatedAt: { not: null },
+        OR: [{ providerEventAt: null }, { providerEventAt: { lte: before } }],
+      },
+      orderBy: [...order],
+      take: RECONCILE_CONNECTED_BATCH,
+      select,
+    });
+    const rows = [...incidents, ...connected];
     const result: ReconcileResult = { checked: 0, changed: 0, stopped: false };
     for (const row of rows) {
       const outcome = await this.reconcileOne(row, now);

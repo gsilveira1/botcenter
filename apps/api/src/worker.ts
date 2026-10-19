@@ -1,6 +1,6 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
-import { createShutdown } from './common/shutdown';
+import { assertWorkerShutdownBudget, createShutdown } from './common/shutdown';
 import { loadEnv } from './config/env';
 import { PinoNestLogger, createRootLogger, flushLogs, getLogger } from './logging/logger';
 import { MetricsService } from './metrics/metrics.service';
@@ -12,6 +12,8 @@ import { WorkerModule } from './worker.module';
  * application context (no HTTP server) with the queue consumers and the internal metrics listener.
  * Graceful shutdown: SIGTERM closes the metrics listener, then `app.close()` closes the workers (BullMQ
  * waits for the current jobs; the other jobs stay in the queue), the queues, Redis, and PostgreSQL.
+ * The shutdown time is `WORKER_SHUTDOWN_TIMEOUT_MS` (default 100 s). It must be longer than the longest
+ * job, or the worker does not start (ARCH-11). Set the container stop time above it (110 s).
  * Container memory: `NODE_OPTIONS=--max-old-space-size=768` for the 1 GB worker container.
  */
 async function main(): Promise<void> {
@@ -20,6 +22,7 @@ async function main(): Promise<void> {
   if (env.ROLE !== 'worker') {
     throw new Error(`dist/worker.js runs the workers: ROLE must be "worker", not "${env.ROLE}"`);
   }
+  assertWorkerShutdownBudget(env);
   createRootLogger(env.LOG_LEVEL);
   const logger = getLogger('worker');
   const app = await NestFactory.createApplicationContext(WorkerModule, {
@@ -34,7 +37,7 @@ async function main(): Promise<void> {
       await closeServer(server);
       await app.close();
     },
-    timeoutMs: env.SHUTDOWN_TIMEOUT_MS,
+    timeoutMs: env.WORKER_SHUTDOWN_TIMEOUT_MS,
     logger,
   });
   process.once('SIGTERM', () => void shutdown('SIGTERM'));

@@ -29,14 +29,22 @@ export const SEND_DESCRIPTION = [
   '  (`created`, `logged_out`) gives 409 `INSTANCE_NOT_CONNECTED`. A `connecting` or `disconnected`',
   '  instance accepts the message; the worker retries for about 12 minutes, then the status is',
   '  `failed` with `failure_reason: not_connected`.',
+  '- An instance has at most `OUTBOUND_MAX_QUEUED_PER_INSTANCE` (default 1000) `queued` messages.',
+  '  Above it, the answer is 429 `QUOTA_EXCEEDED` with `Retry-After: 60`.',
   '- Each instance has a send rate (token bucket). A new number sends slower during its first days',
   '  (warm-up). A message that waits for the rate limit stays `queued`.',
   '- Delivery is at least once. When a send times out, the provider can have sent the message, and',
   '  the retry (after 60 s or more) can send it a second time. After two such timeouts the status is',
   '  `failed` with `failure_reason: send_timeout`.',
+  '- A media `url` must be a public HTTPS file. A URL that resolves to a private, loopback, link-local,',
+  '  or metadata address gives 422 `MEDIA_URL_FORBIDDEN`. The worker downloads the file (no redirects,',
+  '  at most 16 MiB, a WhatsApp file type in `Content-Type`) into the private bucket and sends the copy.',
   '- `failure_reason` values: `invalid_recipient`, `instance_not_found`, `rejected`, `not_connected`,',
   '  `provider_unavailable`, `send_timeout`, `instance_deleted`, `instance_not_connected`,',
-  '  `media_not_found`, `media_not_uploaded`, `internal_error`, `provider_error`.',
+  '  `media_not_found`, `media_not_uploaded`, `media_url_forbidden`, `media_download_failed`,',
+  '  `media_too_large`, `media_type_not_accepted`, `internal_error`, `provider_error`,',
+  '  `instance_queue_full` (a bot reply above the queue limit), `expired` (still `queued` after',
+  '  `OUTBOUND_QUEUED_MAX_AGE_SECONDS`, default 24 h).',
 ].join('\n');
 
 @Controller('v1/messages')

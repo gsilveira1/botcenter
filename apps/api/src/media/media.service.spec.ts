@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { testEnv } from '../../test/support/env';
 import { AppError } from '../common/errors/app-error';
+import { ExternalHttpError } from '../ports/external-http.port';
 import { MediaService, MediaUnavailableError, outboundMediaKey } from './media.service';
 
 const ROW = {
@@ -14,10 +15,15 @@ const ROW = {
 function setup(
   row: typeof ROW | null = ROW,
   stored: { sizeBytes: number } | null = { sizeBytes: 10 },
+  liveBytes = 0,
 ) {
   const mediaObject = {
     findFirst: vi.fn(async () => row),
     create: vi.fn(async () => ({ id: 'media-1' })),
+    aggregate: vi.fn(async () => ({ _sum: { sizeBytes: liveBytes } })),
+  };
+  const quotas = {
+    consume: vi.fn(async () => ({ allowed: true, limit: 1000, retryAfterSeconds: 10 })),
   };
   const prisma = { forTenant: vi.fn(() => ({ mediaObject })) };
   const storage = {
@@ -26,26 +32,57 @@ function setup(
     uploadUrl: vi.fn(async () => 'https://storage.test/put'),
   };
   const tenants = { get: vi.fn(async () => ({ retentionDays: 90 })) };
-  const service = new MediaService(prisma as never, storage as never, tenants as never, testEnv());
-  return { service, mediaObject, storage };
+  const guard = {
+    check: vi.fn(async (url: string) => {
+      if (url.includes('metadata')) {
+        throw new ExternalHttpError('forbidden_address', 'The address is in a forbidden range');
+      }
+      return { url: new URL(url), addresses: [] };
+    }),
+  };
+  const service = new MediaService(
+    prisma as never,
+    storage as never,
+    tenants as never,
+    testEnv({ MEDIA_MAX_BYTES_PER_TENANT: '100' }),
+    guard as never,
+    quotas as never,
+  );
+  return { service, mediaObject, storage, guard, quotas };
 }
 
 describe('MediaService', () => {
-  it('passes a public URL through without a lookup', async () => {
+  it('never gives a client URL to the provider (SEC-01)', async () => {
     const s = setup();
-    const content = await s.service.toProviderContent('t-1', {
-      type: 'media',
-      media_type: 'document',
-      url: 'https://files.example/a.pdf',
-      file_name: 'a.pdf',
-    });
-    expect(content).toEqual({
-      type: 'media',
-      media_type: 'document',
-      url: 'https://files.example/a.pdf',
-      file_name: 'a.pdf',
-    });
-    expect(s.mediaObject.findFirst).not.toHaveBeenCalled();
+    await expect(
+      s.service.toProviderContent('t-1', {
+        type: 'media',
+        media_type: 'document',
+        url: 'https://files.example/a.pdf',
+        file_name: 'a.pdf',
+      }),
+    ).rejects.toThrow('A media URL must be stored in the bucket before the send (SEC-01)');
+    expect(s.storage.downloadUrl).not.toHaveBeenCalled();
+  });
+
+  it('refuses at request time a media URL that the SSRF guard refuses (SEC-01)', async () => {
+    const s = setup();
+    const error = await s.service
+      .assertSendable('t-1', {
+        type: 'media',
+        media_type: 'document',
+        url: 'https://metadata.example/latest',
+      })
+      .catch((caught: unknown) => caught);
+    expect((error as AppError).code).toBe('MEDIA_URL_FORBIDDEN');
+    expect((error as AppError).status).toBe(422);
+    await expect(
+      s.service.assertSendable('t-1', {
+        type: 'media',
+        media_type: 'document',
+        url: 'https://files.example/a.pdf',
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('resolves a media id to a short-lived download URL with the stored type and name', async () => {
@@ -101,6 +138,37 @@ describe('MediaService', () => {
       .catch((caught: unknown) => caught);
     expect((error as AppError).code).toBe('VALIDATION_FAILED');
     expect(s.mediaObject.create).not.toHaveBeenCalled();
+  });
+
+  it('limits the uploads of a tenant: live bytes, uploads for each day, a short URL (SEC-17)', async () => {
+    const request = { content_type: 'image/png', size_bytes: 30, file_name: 'a.png' };
+    const full = setup(ROW, { sizeBytes: 10 }, 80);
+    const tooLarge = await full.service
+      .createUpload('t-1', request)
+      .catch((caught: unknown) => caught);
+    expect((tooLarge as AppError).code).toBe('QUOTA_EXCEEDED');
+    expect(full.mediaObject.create).not.toHaveBeenCalled();
+
+    const daily = setup();
+    daily.quotas.consume.mockResolvedValueOnce({
+      allowed: false,
+      limit: 1000,
+      retryAfterSeconds: 3600,
+    });
+    const refused = await daily.service
+      .createUpload('t-1', request)
+      .catch((caught: unknown) => caught);
+    expect((refused as AppError).code).toBe('QUOTA_EXCEEDED');
+    expect((refused as AppError).headers['Retry-After']).toBe('3600');
+    expect(daily.quotas.consume).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'media-uploads-per-day', subject: 't-1', limit: 1000 }),
+    );
+
+    const ok = setup(ROW, { sizeBytes: 10 }, 70);
+    const now = new Date('2026-10-19T10:00:00Z');
+    const created = await ok.service.createUpload('t-1', request, now);
+    expect(created.expires_at).toBe('2026-10-19T10:05:00.000Z');
+    expect(ok.storage.uploadUrl).toHaveBeenCalledWith(expect.any(String), 'image/png', 30, 300);
   });
 
   it('makes object keys without the file name', () => {

@@ -77,7 +77,9 @@ describe('Idempotency-Key', () => {
     const headers = { ...h.bearer(key), 'idempotency-key': 'fail-1' };
     const first = await h.inject({ method: 'POST', url: '/v1/probe/fail', headers, payload: {} });
     expect(first.statusCode).toBe(409);
-    expect(await h.prisma.idempotencyKey.count({ where: { tenantId, key: 'fail-1' } })).toBe(0);
+    expect(
+      await h.prisma.idempotencyKey.count({ where: { tenantId, key: { endsWith: ':fail-1' } } }),
+    ).toBe(0);
   });
 
   it('scopes the key by tenant', async () => {
