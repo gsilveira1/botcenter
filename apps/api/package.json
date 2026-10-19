@@ -1,6 +1,6 @@
 {
   "name": "@botcenter/api",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Bot Center API (ROLE=api) and workers (ROLE=worker): NestJS 11 on Fastify",
   "main": "dist/main.js",
