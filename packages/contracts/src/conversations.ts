@@ -9,9 +9,10 @@ export const CONVERSATION_TRANSITIONS_MAX = 50;
  * Cause of a transition:
  * - `start`: the first message of a contact opened the conversation (`from_state` is `null`);
  * - `message`: a message of the contact matched a transition;
- * - `timeout`: the state timeout expired.
+ * - `timeout`: the state timeout expired;
+ * - `handoff`: `POST /v1/conversations/{id}/handoff` changed the handoff flag (the state stays).
  */
-export const TRANSITION_TRIGGERS = ['start', 'message', 'timeout'] as const;
+export const TRANSITION_TRIGGERS = ['start', 'message', 'timeout', 'handoff'] as const;
 export const TransitionTrigger = z.enum(TRANSITION_TRIGGERS);
 export type TransitionTrigger = z.infer<typeof TransitionTrigger>;
 

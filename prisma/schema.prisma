@@ -77,10 +77,12 @@ enum MessagePriority {
   @@map("message_priority")
 }
 
+/// `handoff` is a change of the handoff flag by `POST /v1/conversations/{id}/handoff` (the state stays).
 enum TransitionTrigger {
   start
   message
   timeout
+  handoff
 
   @@map("transition_trigger")
 }
@@ -274,6 +276,9 @@ model Conversation {
   variables     Json      @default("{}")
   version       Int       @default(0)
   handoff       Boolean   @default(false)
+  /// The options of the last bot message when it was a buttons or list menu, else `null`.
+  /// The worker maps a text reply (`1`, `2`, or a title) to a button or list reply with it.
+  lastMenu      Json?
   lastInboundAt DateTime? @db.Timestamptz(3)
   createdAt     DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
@@ -327,6 +332,8 @@ model Message {
   providerMessageId String?
   priority          MessagePriority  @default(bulk)
   failureReason     String?
+  /// Inbound only: true until the bot step of the conversation processed the message (in order of `createdAt`).
+  botPending        Boolean          @default(false)
   sentAt            DateTime?        @db.Timestamptz(3)
   deliveredAt       DateTime?        @db.Timestamptz(3)
   readAt            DateTime?        @db.Timestamptz(3)
@@ -342,6 +349,8 @@ model Message {
   @@index([tenantId, createdAt])
   @@index([instanceId, contact])
   @@index([conversationId])
+  /// The inbound messages that wait for the bot step of their conversation.
+  @@index([instanceId, contact, createdAt], map: "messages_bot_pending_idx", where: raw("\"botPending\""))
   @@map("messages")
 }
 
