@@ -103,6 +103,8 @@ export const EnvSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().min(1),
   S3_SECRET_ACCESS_KEY: z.string().min(1),
   S3_FORCE_PATH_STYLE: booleanString.default(false),
+  /** Time limit of one object storage request (the worker shutdown budget counts it). */
+  S3_REQUEST_TIMEOUT_MS: positiveInt.max(120_000).default(15_000),
 
   /** Discord webhook of the operations channel. Without it, `AlertService` logs the alert at `error`. */
   ALERT_DISCORD_WEBHOOK_URL: optional(z.url({ protocol: /^https$/ })),
@@ -118,8 +120,14 @@ export const EnvSchema = z.object({
   INTERNAL_WEBHOOK_BODY_LIMIT_BYTES: positiveInt.default(8 * MIB),
   /** Keep-alive time of an idle HTTP connection. Keep it above the idle time of Caddy. */
   KEEP_ALIVE_TIMEOUT_MS: positiveInt.default(65_000),
-  /** Maximum time of a graceful shutdown (current requests and jobs). */
+  /** Maximum time of a graceful shutdown of the API process (current requests). */
   SHUTDOWN_TIMEOUT_MS: positiveInt.default(25_000),
+  /**
+   * Maximum time of a graceful shutdown of the worker process (ARCH-11). It must be longer than the
+   * longest job (`longestWorkerJobMs` in `common/shutdown.ts`), or the worker does not start. The
+   * container stop time (Compose `stop_grace_period`) must be longer again: 110 s for the default.
+   */
+  WORKER_SHUTDOWN_TIMEOUT_MS: positiveInt.max(600_000).default(100_000),
 
   /** Internal HTTP listener of the worker process (`/metrics`, `/health/live`). */
   WORKER_METRICS_PORT: positiveInt.max(65535).default(9464),
