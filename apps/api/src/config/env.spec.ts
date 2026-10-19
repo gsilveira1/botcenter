@@ -81,4 +81,18 @@ describe('loadEnv', () => {
       /EVOLUTION_SEND_TIMEOUT_MS/,
     );
   });
+
+  it('gives the external HTTP and outbox defaults and refuses private addresses in production', () => {
+    expect(loadEnv(VALID_ENV)).toMatchObject({
+      EXTERNAL_HTTP_ALLOW_PRIVATE: false,
+      EXTERNAL_HTTP_MAX_RESPONSE_BYTES: 1024 * 1024,
+      OUTBOX_DISPATCH_INTERVAL_MS: 1_000,
+    });
+    expect(
+      loadEnv({ ...VALID_ENV, EXTERNAL_HTTP_ALLOW_PRIVATE: 'true' }).EXTERNAL_HTTP_ALLOW_PRIVATE,
+    ).toBe(true);
+    expect(() =>
+      loadEnv({ ...VALID_ENV, NODE_ENV: 'production', EXTERNAL_HTTP_ALLOW_PRIVATE: 'true' }),
+    ).toThrow(/EXTERNAL_HTTP_ALLOW_PRIVATE/);
+  });
 });
