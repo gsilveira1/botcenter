@@ -20,8 +20,14 @@ pnpm --filter @botcenter/api admin:key:create -- --tenant personallife --name ba
 ```
 
 The admin scripts run from `dist` (`node dist/scripts/admin.js <command>`). Run `node dist/scripts/admin.js --help` for the commands. Each command writes an audit row and prints JSON. `key:create` and `key:rotate` print the full key one time.
+`raw-events:replay --id <id>` sends a stored provider event to the `inbound` queue again, without the dedupe check (use it after a failed or lost inbound job).
+`instances:resync-webhook` writes the webhook URL and `EVOLUTION_WEBHOOK_SECRET` again in the provider for each active instance. Run it after a change of the secret. The exit code is 1 when the provider refuses one instance; the JSON lists the failed instances.
 
 Container memory: set `NODE_OPTIONS=--max-old-space-size=384` for the API (512 MB limit) and `--max-old-space-size=768` for the worker (1 GB limit).
+
+Graceful shutdown: the API uses `SHUTDOWN_TIMEOUT_MS` (25 s). The worker uses `WORKER_SHUTDOWN_TIMEOUT_MS` (100 s). The worker does not start when this value is shorter than the longest job plus 5 s (`longestWorkerJobMs` in `src/common/shutdown.ts`, 90 s with the default time limits). Set the container stop time of the worker (`stop_grace_period`) to 110 s.
+
+Metrics of the outbound path: `botcenter_instance_messages_total{instance_id,status}` counts the sends that ended as `sent` or `failed` for each instance (the alert "failure rate of one instance" uses it). `botcenter_rate_limit_denied_total{scope}` has the scopes `instance`, `instance_queue`, and `tenant_day`.
 
 ## Core services
 
@@ -137,7 +143,12 @@ Inject `EXTERNAL_HTTP` (the frozen port, `ExternalHttpPort.postJson`) for a URL 
 - The SSRF guard resolves the host one time, refuses the URL when one address is private, loopback, link-local, CGNAT, multicast, reserved, IPv4-mapped to one of these, or a cloud metadata address, and the connection uses only the checked addresses (no DNS rebinding).
 - HTTPS only when `NODE_ENV=production`. No redirects (a 3xx is a normal response). The time limit is at most 30 s. The response limit is `EXTERNAL_HTTP_MAX_RESPONSE_BYTES`. The `User-Agent` is fixed.
 - The port throws `ExternalHttpError` only (`forbidden_address`, `timeout`, `network`, `response_too_large`).
+- To download a file from a client URL, inject `EXTERNAL_HTTP_BINARY` (`getBinary({ url, timeoutMs, maxBytes })`, additive port). The outbound worker uses it for a media `url` (`MediaUrlFetcher`): the file goes to the private bucket, and the provider gets only a pre-signed URL of the bucket. Never give a client URL to the provider.
 - Tests: replace `DNS_RESOLVER` with `fakeDns()` from `test/support/webhooks.ts`. Set `EXTERNAL_HTTP_ALLOW_PRIVATE=true` (refused in production) to call a local receiver (`TestReceiver` in `test/support/receiver.ts`).
+
+## Add an inbound sweep task
+
+The `sweep-inbound` job of the `inbound` queue (every minute) repairs lost inbound work. Register an `InboundSweepTask` (`name`, `run(now)`) with `InboundHandlerRegistry.registerSweep(this)` in `onModuleInit`. `run` must be idempotent and safe when two runs overlap. A failed task does not stop the other tasks. The conversations slice registers `drain-pending-inbound` and `repair-state-timers`.
 
 ## Add a maintenance task
 

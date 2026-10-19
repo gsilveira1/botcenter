@@ -21,8 +21,14 @@ export type OutboundFailureReason =
   | 'instance_not_connected'
   | 'media_not_found'
   | 'media_not_uploaded'
+  | 'media_url_forbidden'
+  | 'media_download_failed'
+  | 'media_too_large'
+  | 'media_type_not_accepted'
   | 'internal_error'
-  | 'provider_error';
+  | 'provider_error'
+  | 'instance_queue_full'
+  | 'expired';
 
 export type SendErrorKind = 'not_connected' | 'unavailable' | 'ambiguous';
 

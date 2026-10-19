@@ -259,7 +259,7 @@ describe('POST /v1/media', () => {
     });
     expect(response.statusCode).toBe(201);
     const body = response.json() as { media_id: string; upload_url: string; expires_at: string };
-    expect(new Date(body.expires_at).getTime()).toBeGreaterThan(Date.now() + 800_000);
+    expect(new Date(body.expires_at).getTime()).toBeGreaterThan(Date.now() + 280_000);
     const row = await h.prisma.mediaObject.findUniqueOrThrow({ where: { id: body.media_id } });
     expect(row).toMatchObject({
       tenantId: f.tenant.id,

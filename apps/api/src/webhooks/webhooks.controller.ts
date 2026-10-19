@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
-import { Auth } from '../auth/auth-context';
+import { Auth, assertAllInstancesAllowed } from '../auth/auth-context';
 import type { AuthContext } from '../auth/auth-context';
 import { RequireScope } from '../auth/decorators';
 import { SkipIdempotency } from '../idempotency/idempotency.interceptor';
@@ -17,8 +17,13 @@ import {
 import { WebhookDeliveriesService } from './webhook-deliveries.service';
 import { WebhookSubscriptionsService } from './webhook-subscriptions.service';
 
+/** The webhooks get the events of every instance of the tenant. */
+const WEBHOOKS_ACTION = 'use the webhooks';
+
 /**
- * `/v1/webhooks`: the outgoing events of a tenant. All routes need the `events:read` scope.
+ * `/v1/webhooks`: the outgoing events of a tenant. All routes need the `events:read` scope and a key
+ * without an instance list (403 `INSTANCE_NOT_ALLOWED`), because a webhook gets the events of every
+ * instance of the tenant (SEC-03).
  * The create and the rotation skip `Idempotency-Key`: the idempotency store keeps the response body in
  * plain text for 24 h, and the signing secret must exist only in the response and in `SecretBox`.
  */
@@ -42,6 +47,7 @@ export class WebhooksController {
   })
   @ApiResponse(201, { description: 'Registered', schema: WebhookCreatedResponseDto })
   create(@Auth() auth: AuthContext, @Body() body: CreateWebhookBody) {
+    assertAllInstancesAllowed(auth, WEBHOOKS_ACTION);
     return this.subscriptions.create(auth, body);
   }
 
@@ -49,6 +55,7 @@ export class WebhooksController {
   @ApiOperation({ summary: 'List the webhooks', description: 'The secret is never in this list.' })
   @ApiResponse(200, { description: 'One page of webhooks', schema: WebhookPageDto })
   list(@Auth() auth: AuthContext, @Query() query: ListWebhooksQuery) {
+    assertAllInstancesAllowed(auth, WEBHOOKS_ACTION);
     return this.subscriptions.list(auth, query);
   }
 
@@ -56,6 +63,7 @@ export class WebhooksController {
   @ApiOperation({ summary: 'List the webhook deliveries', description: 'Newest first.' })
   @ApiResponse(200, { description: 'One page of deliveries', schema: WebhookDeliveryPageDto })
   listDeliveries(@Auth() auth: AuthContext, @Query() query: ListWebhookDeliveriesQueryDto) {
+    assertAllInstancesAllowed(auth, WEBHOOKS_ACTION);
     return this.deliveries.list(auth, query);
   }
 
@@ -68,6 +76,7 @@ export class WebhooksController {
   })
   @ApiResponse(202, { description: 'Queued again', schema: WebhookDeliveryResponseDto })
   redeliver(@Auth() auth: AuthContext, @Param() params: WebhookParams) {
+    assertAllInstancesAllowed(auth, WEBHOOKS_ACTION);
     return this.deliveries.redeliver(auth, params.id);
   }
 
@@ -79,6 +88,7 @@ export class WebhooksController {
   })
   @ApiResponse(204, { description: 'Deleted' })
   async remove(@Auth() auth: AuthContext, @Param() params: WebhookParams): Promise<void> {
+    assertAllInstancesAllowed(auth, WEBHOOKS_ACTION);
     await this.subscriptions.remove(auth, params.id);
   }
 
@@ -93,6 +103,7 @@ export class WebhooksController {
   })
   @ApiResponse(200, { description: 'Rotated', schema: WebhookCreatedResponseDto })
   rotateSecret(@Auth() auth: AuthContext, @Param() params: WebhookParams) {
+    assertAllInstancesAllowed(auth, WEBHOOKS_ACTION);
     return this.subscriptions.rotateSecret(auth, params.id);
   }
 }

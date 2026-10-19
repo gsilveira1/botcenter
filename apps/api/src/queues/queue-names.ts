@@ -27,6 +27,15 @@ export interface OutboundJob {
   providerMessageId?: string;
   /** Sends that ended in a timeout or a network error (the message can be on WhatsApp already). */
   ambiguousSends?: number;
+  /** Waits for an older queued row of the same contact (send order, ARCH-02). The wait grows with it. */
+  orderWaits?: number;
+  /**
+   * Epoch ms when a job that went back to the delayed set (rate limit, send order) is ready again. The
+   * queue delay metric reads it, because BullMQ keeps the creation time of the job.
+   */
+  readyAt?: number;
+  /** The bucket copy of the file of a media `url` (SEC-01). A retry sends it and does not download again. */
+  mediaId?: string;
 }
 
 /** `outbound`, job name `sweep`: the repeatable job that enqueues `queued` messages without a job again. */
@@ -47,6 +56,14 @@ export interface InboundJob {
   /** Row of `raw_events`, when the store succeeded. */
   rawEventId: string | null;
   receivedAt: string;
+}
+
+/**
+ * `inbound`, job name `sweep-inbound`: the repeatable job that repairs the inbound path (ARCH-01, ARCH-08):
+ * it drains old `botPending` rows and arms lost state timers (conversations slice).
+ */
+export interface InboundSweepJob {
+  task: 'sweep-inbound';
 }
 
 /** `webhooks`: deliver one webhook delivery row (webhooks slice). */
@@ -77,6 +94,8 @@ export interface MaintenanceJob {
     | 'purge-outbox-events'
     | 'purge-media-objects'
     | 'sweep-webhook-deliveries'
+    | 'purge-conversations'
+    | 'purge-bot-webhook-calls'
     | 'check-alerts';
 }
 
@@ -93,7 +112,7 @@ export type MaintenanceTaskName = MaintenanceJob['task'];
 
 export interface JobPayloads {
   outbound: OutboundJob | OutboundSweepJob;
-  inbound: InboundJob;
+  inbound: InboundJob | InboundSweepJob;
   webhooks: WebhookJob;
   timers: TimerJob;
   maintenance: MaintenanceJob;

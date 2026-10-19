@@ -21,6 +21,8 @@ export const ConversationRecord = z.object({
   version: z.number().int().min(0),
   handoff: z.boolean(),
   lastMenu: LastMenu.nullable(),
+  /** State timeouts in a row without an inbound message (SEC-04). Old cache entries do not have it. */
+  timeoutsInRow: z.number().int().min(0).default(0),
 });
 export type ConversationRecord = z.infer<typeof ConversationRecord>;
 
@@ -51,6 +53,7 @@ export function toConversationRecord(row: Conversation): ConversationRecord {
     version: row.version,
     handoff: row.handoff,
     lastMenu: parseLastMenu(row.lastMenu),
+    timeoutsInRow: row.timeoutsInRow,
   };
 }
 

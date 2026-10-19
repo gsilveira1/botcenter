@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AdminCliModule } from '../../src/admin/admin.module';
 import { AdminService } from '../../src/admin/admin.service';
+import { inboundJobId } from '../../src/inbound/inbound-ingest.service';
+import { QueuesService } from '../../src/queues/queues.service';
 import { redisKeys } from '../../src/redis/redis-keys';
+import { evolutionInboundText } from '../support/fake-provider';
 import { runAdminCli } from '../../src/scripts/admin-cli';
 import { TestHarness } from '../support/harness';
 import { ProbeController } from '../support/probe.controller';
@@ -216,5 +219,105 @@ describe('admin CLI', () => {
     ).toContain('allowedIps');
     expect((await cli('key:destroy')).code).toBe(2);
     expect((await cli('tenant:create', '--name', 'x')).code).toBe(2);
+  });
+});
+
+describe('admin CLI: raw event replay (ARCH-01 item 3)', () => {
+  it('replays a raw event through the normalizer and the inbound queue without the dedupe check', async () => {
+    const tenant = await h.createTenant();
+    const instance = await h.createInstance(tenant.id);
+    const webhook = evolutionInboundText({ instanceName: instance.providerName, text: 'Oi' });
+    const raw = await h.prisma.rawEvent.create({
+      data: {
+        instanceId: instance.id,
+        eventType: 'message.received',
+        payload: webhook.body as object,
+      },
+    });
+    // The event was accepted once: the dedupe key exists, so a provider retry would be dropped.
+    await h.redis.set(redisKeys.inboundDedupe(webhook.dedupeKey), '1', 'EX', 60);
+
+    const replayed = await cli('raw-events:replay', '--id', raw.id);
+    expect(replayed.code).toBe(0);
+    const out = replayed.out as { raw_event_id: string; enqueued: number; jobs: string[] };
+    expect(out).toMatchObject({ raw_event_id: raw.id, enqueued: 1 });
+    expect(out.jobs[0]).toContain(inboundJobId(webhook.dedupeKey));
+    const job = await h.get(QueuesService).get('inbound').getJob(out.jobs[0]!);
+    expect(job?.name).toBe('message.received');
+    expect(job?.data).toMatchObject({
+      rawEventId: raw.id,
+      receivedAt: raw.receivedAt.toISOString(),
+      event: { kind: 'message.received', dedupeKey: webhook.dedupeKey },
+    });
+    // A second replay adds a new job (a new id), for a replay after a failed job.
+    const again = await cli('raw-events:replay', '--id', raw.id);
+    expect((again.out as { jobs: string[] }).jobs[0]).not.toBe(out.jobs[0]);
+    expect(await auditActions(tenant.id)).toEqual(['raw_event.replay', 'raw_event.replay']);
+  });
+
+  it('refuses an unknown row and a body that the normalizer rejects', async () => {
+    const unknown = await cli('raw-events:replay', '--id', '0199a1b2-0000-7000-8000-000000000001');
+    expect(unknown.code).toBe(1);
+    expect(unknown.err).toContain('NOT_FOUND');
+    const raw = await h.prisma.rawEvent.create({
+      data: { eventType: 'rejected', payload: { event: 'messages.upsert', data: 'broken' } },
+    });
+    const rejected = await cli('raw-events:replay', '--id', raw.id);
+    expect(rejected.code).toBe(1);
+    expect(rejected.err).toContain('VALIDATION_FAILED');
+    expect((await cli('raw-events:replay')).code).toBe(2);
+  });
+});
+
+describe('admin CLI: webhook resync of the instances', () => {
+  it('writes the current webhook and secret again for each active instance of the provider', async () => {
+    const tenant = await h.createTenant();
+    const created = await h.createInstance(tenant.id, { providerCreatedAt: new Date() });
+    const failing = await h.createInstance(tenant.id, { providerCreatedAt: new Date() });
+    const notInProvider = await h.createInstance(tenant.id);
+    const deleted = await h.createInstance(tenant.id, {
+      providerCreatedAt: new Date(),
+      deletedAt: new Date(),
+    });
+    h.provider.calls.length = 0;
+    const originalCreate = h.provider.createInstance.bind(h.provider);
+    h.provider.createInstance = async (input) => {
+      if (input.name === failing.providerName) {
+        throw new (await import('@botcenter/whatsapp-provider')).ProviderError(
+          'unavailable',
+          'down',
+        );
+      }
+      return originalCreate(input);
+    };
+    try {
+      const result = await cli('instances:resync-webhook');
+      expect(result.code).toBe(1);
+      const out = result.out as { total: number; succeeded: number; failed: string[] };
+      expect(out.failed).toEqual([failing.id]);
+      expect(out.succeeded).toBe(out.total - 1);
+    } finally {
+      h.provider.createInstance = originalCreate;
+    }
+    const names = h.provider.calls
+      .filter((call) => call.method === 'createInstance')
+      .map((call) => (call.args[0] as { name: string; webhookSecret: string }).name);
+    expect(names).toContain(created.providerName);
+    expect(names).not.toContain(notInProvider.providerName);
+    expect(names).not.toContain(deleted.providerName);
+    const [call] = h.provider.calls.filter(
+      (entry) =>
+        entry.method === 'createInstance' &&
+        (entry.args[0] as { name: string }).name === created.providerName,
+    );
+    expect(call?.args[0]).toMatchObject({
+      webhookSecret: h.env.EVOLUTION_WEBHOOK_SECRET,
+      webhookUrl: expect.stringContaining('/internal/evolution/webhook'),
+    });
+    const audit = await h.prisma.auditLog.findFirstOrThrow({
+      where: { action: 'instance.resync_webhook' },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(audit).toMatchObject({ actor: 'cli:tester', tenantId: null });
   });
 });

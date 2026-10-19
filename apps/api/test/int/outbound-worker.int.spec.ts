@@ -242,6 +242,28 @@ describe('outbound worker (in-memory provider)', () => {
     await waitForStatus(row.id, 'sent');
   });
 
+  it('expires a queued row older than one day, with the status event', async () => {
+    const f = await fixture({ status: 'connecting' });
+    const row = await h.prisma.message.create({
+      data: {
+        tenantId: f.tenant.id,
+        instanceId: f.instance.id,
+        direction: 'outbound',
+        type: 'text',
+        status: 'queued',
+        contact: '5511987654321',
+        content: { type: 'text', text: 'Oi' },
+        createdAt: new Date(Date.now() - 25 * 3_600_000),
+      },
+    });
+    const result = await worker.get(OutboundSweep).run();
+    expect(result.expired).toBeGreaterThanOrEqual(1);
+    expect(await message(row.id)).toMatchObject({ status: 'failed', failureReason: 'expired' });
+    expect(await statusEvents(row.id)).toEqual([
+      expect.objectContaining({ status: 'failed', failure_reason: 'expired' }),
+    ]);
+  });
+
   it('ends the inbound job of a status event for an unknown message', async () => {
     const f = await fixture();
     const webhook = evolutionStatus({
@@ -265,15 +287,47 @@ describe('instance token bucket (Lua script in Redis)', () => {
     const id = randomUUID();
     const limits = { ratePerMinute: 60, burst: 2 };
     const t0 = 1_000_000;
-    expect(await bucket.take(id, limits, t0)).toEqual({ allowed: true, waitMs: 0 });
-    expect(await bucket.take(id, limits, t0)).toEqual({ allowed: true, waitMs: 0 });
-    expect(await bucket.take(id, limits, t0)).toEqual({ allowed: false, waitMs: 1_000 });
-    expect(await bucket.take(id, limits, t0 + 400)).toEqual({ allowed: false, waitMs: 600 });
-    expect(await bucket.take(id, limits, t0 + 1_000)).toEqual({ allowed: true, waitMs: 0 });
+    expect(await bucket.take(id, limits, { nowMs: t0 })).toEqual({ allowed: true, waitMs: 0 });
+    expect(await bucket.take(id, limits, { nowMs: t0 })).toEqual({ allowed: true, waitMs: 0 });
+    expect(await bucket.take(id, limits, { nowMs: t0 })).toEqual({ allowed: false, waitMs: 1_000 });
+    expect(await bucket.take(id, limits, { nowMs: t0 + 400 })).toEqual({
+      allowed: false,
+      waitMs: 600,
+    });
+    expect(await bucket.take(id, limits, { nowMs: t0 + 1_000 })).toEqual({
+      allowed: true,
+      waitMs: 0,
+    });
     // After a long idle time, the bucket holds the burst, not more.
-    await bucket.take(id, limits, t0 + 600_000);
-    await bucket.take(id, limits, t0 + 600_000);
-    expect((await bucket.take(id, limits, t0 + 600_000)).allowed).toBe(false);
+    await bucket.take(id, limits, { nowMs: t0 + 600_000 });
+    await bucket.take(id, limits, { nowMs: t0 + 600_000 });
+    expect((await bucket.take(id, limits, { nowMs: t0 + 600_000 })).allowed).toBe(false);
+  });
+
+  it('gives each denied bulk job its own place in the line, one interval apart (ARCH-10)', async () => {
+    const bucket = worker.get(InstanceTokenBucket);
+    const id = randomUUID();
+    const limits = { ratePerMinute: 4, burst: 1 };
+    const t0 = 2_000_000;
+    expect((await bucket.take(id, limits, { spread: true, nowMs: t0 })).allowed).toBe(true);
+    const waits = [];
+    for (let index = 0; index < 4; index += 1) {
+      waits.push((await bucket.take(id, limits, { spread: true, nowMs: t0 })).waitMs);
+    }
+    // One token every 15 s: the jobs wake one at a time, not all at the next token.
+    expect(waits).toEqual([15_000, 30_000, 45_000, 60_000]);
+    // A reply is not in the line: it waits only for the next token.
+    expect(await bucket.take(id, limits, { nowMs: t0 })).toEqual({
+      allowed: false,
+      waitMs: 15_000,
+    });
+    // The first job of the line gets the token at its time.
+    expect((await bucket.take(id, limits, { spread: true, nowMs: t0 + 15_000 })).allowed).toBe(
+      true,
+    );
+    // A token that a job gives back is free for the next take.
+    await bucket.refund(id, limits);
+    expect((await bucket.take(id, limits, { nowMs: t0 + 15_000 })).allowed).toBe(true);
   });
 
   it('is atomic: parallel takes never give more than the burst', async () => {

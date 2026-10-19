@@ -1,6 +1,7 @@
 import { Injectable, Module } from '@nestjs/common';
 import type { OnModuleInit } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Job } from 'bullmq';
 import { InboundHandlerRegistry } from '../../src/inbound/inbound-handler.registry';
 import type {
   InboundHandler,
@@ -9,6 +10,7 @@ import type {
 } from '../../src/inbound/inbound-handler.registry';
 import { inboundJobId } from '../../src/inbound/inbound-ingest.service';
 import { QueuesService } from '../../src/queues/queues.service';
+import type { InboundJob } from '../../src/queues/queue-names';
 import { evolutionInboundText, evolutionStatus } from '../support/fake-provider';
 import { CoreWorkerRoot } from '../support/core-worker-root';
 import { TestHarness } from '../support/harness';
@@ -84,7 +86,10 @@ describe('POST /internal/evolution/webhook', () => {
     const second = await post(webhook.body);
     expect(second.json()).toMatchObject({ enqueued: 0, duplicates: 1 });
 
-    const job = await h.get(QueuesService).get('inbound').getJob(inboundJobId(webhook.dedupeKey));
+    const job = (await h
+      .get(QueuesService)
+      .get('inbound')
+      .getJob(inboundJobId(webhook.dedupeKey))) as Job<InboundJob> | undefined;
     expect(job?.name).toBe('message.received');
     expect(job?.data.event).toMatchObject({
       kind: 'message.received',

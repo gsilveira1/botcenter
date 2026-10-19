@@ -25,6 +25,7 @@ describe('deliveryJobId', () => {
       deliveryJobId(ref),
     );
     expect(deliveryJobId(ref)).not.toContain(':');
+    expect(deliveryJobId(ref, 'bot_call')).toBe(`bc-${ref.id}-1760000060000`);
   });
 });
 
@@ -39,6 +40,18 @@ describe('WebhookDeliveryJobs.enqueue', () => {
         data: { tenantId: ref.tenantId, deliveryId: ref.id },
         opts: expect.objectContaining({ jobId: deliveryJobId(ref), delay: 60_000, attempts: 5 }),
       },
+    ]);
+  });
+
+  it('adds a bot call job with its own name and id prefix', async () => {
+    const addBulk = vi.fn(async () => []);
+    const jobs = new WebhookDeliveryJobs(queuesWith(addBulk), new RecordingAlertService(testEnv()));
+    await jobs.enqueue([ref], 1_760_000_000_000, 'bot_call');
+    expect(addBulk).toHaveBeenCalledWith([
+      expect.objectContaining({
+        name: 'bot-call',
+        opts: expect.objectContaining({ jobId: deliveryJobId(ref, 'bot_call') }),
+      }),
     ]);
   });
 

@@ -9,6 +9,7 @@ import type { ConversationCacheService } from '../conversation-cache.service';
 import { ConversationMetrics } from '../conversation-metrics';
 import type { ConversationRecord } from '../conversation-record';
 import type { AfterCommitService } from './after-commit.service';
+import type { BotWebhookCallsService } from '../../webhooks/bot-webhook-calls.service';
 import { BotHttpService } from './bot-http';
 import type { ConversationLoader } from './conversation-loader.service';
 import {
@@ -77,6 +78,7 @@ function record(overrides: Partial<ConversationRecord> = {}): ConversationRecord
     variables: { escolha: '' },
     version: 4,
     handoff: false,
+    timeoutsInRow: 0,
     lastMenu: {
       kind: 'buttons',
       options: [
@@ -100,19 +102,23 @@ function build(loaded: ConversationRecord | null) {
     current: vi.fn(async () => current),
   };
   const writer = {
-    write: vi.fn(async (plan: StepPlan) => ({ record: record(), replies: [], plan })),
+    write: vi.fn(async (plan: StepPlan) => ({
+      record: record(),
+      replies: [],
+      webhookCalls: [],
+      plan,
+    })),
     consumeOnly: vi.fn(async () => undefined),
     isPending: vi.fn(async () => true),
   };
-  const afterCommit = { run: vi.fn(async () => []) };
+  const afterCommit = { run: vi.fn(async () => undefined) };
   const cache = { delete: vi.fn(async () => undefined) };
   const alerts = { notify: vi.fn(async () => undefined) };
-  const http = new BotHttpService(
-    { postJson: vi.fn() },
-    alerts as unknown as AlertService,
-    metrics,
-  );
+  const http = new BotHttpService({ postJson: vi.fn() }, {
+    signedHeaders: vi.fn(async () => ({})),
+  } as unknown as BotWebhookCallsService);
   const service = new ConversationStepService(
+    testEnv({ BOT_MAX_TIMEOUTS_IN_ROW: '3' }),
     loader as unknown as ConversationLoader,
     definitions as unknown as BotDefinitionsService,
     writer as unknown as ConversationWriter,
@@ -169,13 +175,24 @@ describe('ConversationStepService.applyMessage', () => {
     ['stale', record(), instance, new Date(Date.now() - 2 * 60 * 60_000)],
   ])('skips the bot step (%s) and consumes the message', async (reason, loaded, target, at) => {
     const { service, writer } = build(loaded);
-    await expect(service.applyMessage(target, message('Oi', at))).resolves.toEqual([]);
+    await expect(service.applyMessage(target, message('Oi', at))).resolves.toBeUndefined();
     expect(writer.write).not.toHaveBeenCalled();
     expect(writer.consumeOnly).toHaveBeenCalledWith(
       instance.tenantId,
       'm1',
       reason === 'handoff' ? record().id : null,
     );
+  });
+
+  it('reads PostgreSQL before a handoff skip, so a stale cache entry cannot stop the bot (ARCH-09)', async () => {
+    const { service, loader, writer } = build(record({ handoff: true }));
+    // The cache says `handoff = true`, but PostgreSQL says the bot runs the conversation again.
+    loader.load.mockResolvedValueOnce(record({ handoff: true }));
+    loader.load.mockResolvedValueOnce(record({ handoff: false }));
+    await service.applyMessage(instance, message('1'));
+    expect(loader.load.mock.calls[1]).toEqual([instance, '5511987654321', { fresh: true }]);
+    expect(writer.consumeOnly).not.toHaveBeenCalled();
+    expect(writer.write).toHaveBeenCalledTimes(1);
   });
 
   it('skips a message with an alert when the bot data is broken', async () => {
@@ -186,6 +203,14 @@ describe('ConversationStepService.applyMessage', () => {
     expect(alerts.notify).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Bot data error in a conversation step' }),
     );
+  });
+
+  it('does not wait for a slow alert of a data error while it holds the lock (ARCH-20)', async () => {
+    const { service, writer, definitions, alerts } = build(record());
+    alerts.notify.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+    definitions.version.mockRejectedValueOnce(new BotDataError('missing version'));
+    await expect(service.applyMessage(instance, message('Oi'))).resolves.toBeUndefined();
+    expect(writer.consumeOnly).toHaveBeenCalled();
   });
 
   it('reloads from PostgreSQL and runs the engine again after a write conflict', async () => {
@@ -202,7 +227,7 @@ describe('ConversationStepService.applyMessage', () => {
     const consumed = build(record());
     consumed.writer.write.mockRejectedValueOnce(new WriteConflictError('consumed'));
     consumed.writer.isPending.mockResolvedValueOnce(false);
-    await expect(consumed.service.applyMessage(instance, message('1'))).resolves.toEqual([]);
+    await expect(consumed.service.applyMessage(instance, message('1'))).resolves.toBeUndefined();
     expect(consumed.writer.write).toHaveBeenCalledTimes(1);
 
     const busy = build(record());
@@ -251,7 +276,58 @@ describe('ConversationStepService.applyTimer', () => {
     ['no conversation', null, job('menu', 4)],
   ])('is a no-op for %s', async (_case, loaded, timer) => {
     const { service, writer } = build(loaded);
-    await expect(service.applyTimer(instance, '5511987654321', timer)).resolves.toEqual([]);
+    await expect(service.applyTimer(instance, '5511987654321', timer)).resolves.toBeUndefined();
     expect(writer.write).not.toHaveBeenCalled();
+  });
+});
+
+describe('ConversationStepService: timeouts in a row (SEC-04)', () => {
+  const looping = BotDefinition.parse({
+    initial_state: 'espera',
+    states: {
+      espera: {
+        on_enter: [{ type: 'send_message', message: { type: 'text', text: 'Ainda aí?' } }],
+        transitions: [{ condition: { type: 'any' }, target: 'espera' }],
+        timeout: { after_seconds: 10, target: 'espera' },
+      },
+    },
+  });
+  const timer = (version: number) => ({
+    tenantId: instance.tenantId,
+    conversationId: record().id,
+    state: 'espera',
+    conversationVersion: version,
+  });
+
+  it('does not arm the timer again after the last timeout in a row', async () => {
+    const { service, plan, definitions } = build(
+      record({ state: 'espera', timeoutsInRow: 2, lastMenu: null }),
+    );
+    definitions.version.mockResolvedValue({ ...pinned, definition: looping });
+    await service.applyTimer(instance, '5511987654321', timer(4));
+    expect(plan()).toMatchObject({
+      timeoutsInRow: 3,
+      result: { trigger: 'timeout', toState: 'espera', timer: null },
+    });
+  });
+
+  it('arms the timer while the count is under the limit', async () => {
+    const { service, plan, definitions } = build(
+      record({ state: 'espera', timeoutsInRow: 1, lastMenu: null }),
+    );
+    definitions.version.mockResolvedValue({ ...pinned, definition: looping });
+    await service.applyTimer(instance, '5511987654321', timer(4));
+    expect(plan().timeoutsInRow).toBe(2);
+    expect(plan().result.timer).toMatchObject({ state: 'espera', version: 5 });
+  });
+
+  it('starts the count again at an inbound message', async () => {
+    const { service, plan, definitions } = build(
+      record({ state: 'espera', timeoutsInRow: 3, lastMenu: null }),
+    );
+    definitions.version.mockResolvedValue({ ...pinned, definition: looping });
+    await service.applyMessage(instance, message('Oi'));
+    expect(plan().timeoutsInRow).toBe(0);
+    expect(plan().result.timer).toMatchObject({ state: 'espera' });
   });
 });

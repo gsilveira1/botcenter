@@ -5,8 +5,10 @@ import type { OutboundMessagesPort } from '../../ports/outbound-messages.port';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { TransactionClient } from '../../prisma/prisma.service';
 import { OutboxService } from '../../services/outbox.service';
+import { BotWebhookCallsService } from '../../webhooks/bot-webhook-calls.service';
 import { recordTransition } from '../conversation-transition';
 import { typingDelayMs } from '../typing-delay';
+import { botWebhookCalls } from './bot-http';
 import { WriteConflictError, recordAfter } from './step-plan';
 import type { StepOutcome, StepPlan, WrittenReply } from './step-plan';
 
@@ -17,7 +19,8 @@ function json(value: unknown): Prisma.InputJsonValue {
 /**
  * Writes one engine step in ONE transaction: the conversation (optimistic lock on `version`), the
  * transition row, the bot replies (`OUTBOUND_MESSAGES.createInTx`, priority `reply`, typing delay), the
- * `conversation.transitioned` event, and the consumed inbound row. A changed `version` throws
+ * `conversation.transitioned` event, the `call_webhook` rows (ARCH-04), and the consumed inbound row.
+ * A changed `version` throws
  * `WriteConflictError` and the transaction rolls back.
  */
 @Injectable()
@@ -26,6 +29,7 @@ export class ConversationWriter {
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
     @Inject(OUTBOUND_MESSAGES) private readonly outbound: OutboundMessagesPort,
+    private readonly botCalls: BotWebhookCallsService,
   ) {}
 
   async write(plan: StepPlan): Promise<StepOutcome> {
@@ -48,10 +52,12 @@ export class ConversationWriter {
           handoff: plan.result.handoff,
         });
       }
+      const record = recordAfter(plan);
+      const webhookCalls = await this.botCalls.createInTx(tx, botWebhookCalls(plan, record));
       if (plan.messageId !== null) {
         await this.consume(tx, plan.instance.tenantId, plan.messageId, plan.conversationId);
       }
-      return { record: recordAfter(plan), replies };
+      return { record, replies, webhookCalls };
     });
   }
 
@@ -78,7 +84,8 @@ export class ConversationWriter {
 
   private async writeConversation(tx: TransactionClient, plan: StepPlan): Promise<void> {
     const { result, instance } = plan;
-    const lastInboundAt = plan.messageId === null ? {} : { lastInboundAt: plan.now };
+    const lastInboundAt =
+      plan.messageId === null ? {} : { lastInboundAt: plan.now, timeoutsInRow: 0 };
     if (!result.persist) {
       await tx.conversation.updateMany({
         where: { id: plan.conversationId, tenantId: instance.tenantId },
@@ -94,7 +101,10 @@ export class ConversationWriter {
       version: result.version,
       handoff: result.handoff,
       lastMenu: plan.lastMenu === null ? Prisma.DbNull : json(plan.lastMenu),
+      // ARCH-08: the timer of the new version is in the same commit, so a lost job can be repaired.
+      timerFireAt: result.timer?.fireAt ?? null,
       ...lastInboundAt,
+      timeoutsInRow: plan.timeoutsInRow,
     };
     if (plan.expectedVersion === null) {
       await this.create(tx, plan, data);

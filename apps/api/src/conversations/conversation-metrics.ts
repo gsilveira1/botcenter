@@ -20,12 +20,20 @@ export class ConversationMetrics {
   readonly cache: Counter<'result'>;
   /** Inbound media files: `stored`, `failed`, `too_large`. */
   readonly inboundMedia: Counter<'result'>;
-  /** State timers: `scheduled`, `fired`, `stale`, `schedule_failed`. */
+  /** State timers: `scheduled`, `fired`, `stale`, `schedule_failed`, `limit` (SEC-04). */
   readonly timers: Counter<'result'>;
   /** `call_webhook` actions: `succeeded`, `failed`. */
   readonly botWebhooks: Counter<'result'>;
-  /** Inbound messages that the bot step did not run for: `handoff`, `no_bot`, `stale`, `engine_error`. */
+  /**
+   * Inbound messages that the bot step did not run for: `handoff`, `no_bot`, `stale`, `engine_error`,
+   * `rate_limited` (SEC-04).
+   */
   readonly skipped: Counter<'reason'>;
+  /**
+   * Lost work that the `sweep-inbound` job repaired (ARCH-01, ARCH-08): `pending_drained`,
+   * `pending_dropped`, `timer_rearmed`, `timer_cleared`. A value above zero shows an earlier failure.
+   */
+  readonly repairs: Counter<'kind'>;
 
   constructor(private readonly metrics: MetricsService) {
     this.transitions = metrics.counter({
@@ -72,6 +80,11 @@ export class ConversationMetrics {
       name: 'botcenter_conversation_skipped_total',
       help: 'Inbound messages that the bot step did not run for, by reason',
       labelNames: ['reason'],
+    });
+    this.repairs = metrics.counter({
+      name: 'botcenter_inbound_repairs_total',
+      help: 'Lost inbound work that the sweep-inbound job repaired, by kind',
+      labelNames: ['kind'],
     });
   }
 

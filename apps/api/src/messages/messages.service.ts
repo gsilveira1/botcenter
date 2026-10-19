@@ -29,7 +29,7 @@ export class MessagesService {
   ) {}
 
   /**
-   * Checks the instance, the media, and the daily quota, writes the row `queued`, and adds the job.
+   * Checks the instance, the media, the queued rows of the instance (SEC-04), and the daily quota, writes the row `queued`, and adds the job.
    * An enqueue error does not change the answer (202): the sweep of the worker sends the message later.
    */
   async send(auth: AuthContext, request: SendMessageRequest): Promise<MessageResponse> {
@@ -39,6 +39,7 @@ export class MessagesService {
     if (content.type === 'media') {
       await this.media.assertSendable(auth.tenantId, content);
     }
+    await this.outbound.assertQueueBelowLimit(auth.tenantId, instanceId);
     const refund = await this.quota.consume(auth.tenantId);
     let row;
     try {

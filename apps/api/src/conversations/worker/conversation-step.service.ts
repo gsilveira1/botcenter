@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   EngineStateError,
   handleInbound,
@@ -6,6 +6,8 @@ import {
   startConversation,
 } from '@botcenter/engine';
 import type { EngineResult } from '@botcenter/engine';
+import { ENV } from '../../config/env';
+import type { AppEnv } from '../../config/env';
 import { getLogger } from '../../logging/logger';
 import type { TimerJob } from '../../queues/queue-names';
 import { AlertService } from '../../services/alert.service';
@@ -22,7 +24,6 @@ import type { LastMenu } from '../menu-reply';
 import { uuidV7 } from '../uuid-v7';
 import { AfterCommitService } from './after-commit.service';
 import { BotHttpService } from './bot-http';
-import type { BotWebhookCall } from './bot-http';
 import { ConversationLoader } from './conversation-loader.service';
 import { ConversationWriter } from './conversation-writer.service';
 import { EngineDiagnosticsReporter } from './engine-diagnostics';
@@ -59,12 +60,18 @@ interface PlanInput {
   result: EngineResult;
   previousMenu: LastMenu | null;
   messageId: string | null;
+  /** State timeouts in a row after this step (SEC-04). */
+  timeoutsInRow: number;
   now: Date;
 }
 
 /** The timer belongs to this conversation, and the bot (not a human) runs it. */
 function isTimerTarget(conversation: ConversationRecord, job: TimerJob): boolean {
   return conversation.id === job.conversationId && !conversation.handoff;
+}
+
+function timerInput(job: TimerJob, now: Date) {
+  return { timerState: job.state, timerVersion: job.conversationVersion, now };
 }
 
 /** All attempts of a step conflicted. The job fails this attempt and BullMQ retries it with backoff. */
@@ -83,8 +90,10 @@ export class ConversationConflictError extends Error {
 @Injectable()
 export class ConversationStepService {
   private readonly logger = getLogger('conversation-step');
+  private readonly maxTimeoutsInRow: number;
 
   constructor(
+    @Inject(ENV) env: AppEnv,
     private readonly loader: ConversationLoader,
     private readonly definitions: BotDefinitionsService,
     private readonly writer: ConversationWriter,
@@ -94,12 +103,11 @@ export class ConversationStepService {
     private readonly diagnostics: EngineDiagnosticsReporter,
     private readonly metrics: ConversationMetrics,
     private readonly alerts: AlertService,
-  ) {}
+  ) {
+    this.maxTimeoutsInRow = env.BOT_MAX_TIMEOUTS_IN_ROW;
+  }
 
-  async applyMessage(
-    instance: InstanceContext,
-    message: PendingMessage,
-  ): Promise<BotWebhookCall[]> {
+  async applyMessage(instance: InstanceContext, message: PendingMessage): Promise<void> {
     return this.withRetry(instance, message.contact, async (fresh) => {
       if (fresh && !(await this.writer.isPending(instance.tenantId, message.id))) {
         return null;
@@ -113,11 +121,7 @@ export class ConversationStepService {
     });
   }
 
-  async applyTimer(
-    instance: InstanceContext,
-    contact: string,
-    job: TimerJob,
-  ): Promise<BotWebhookCall[]> {
+  async applyTimer(instance: InstanceContext, contact: string, job: TimerJob): Promise<void> {
     return this.withRetry(instance, contact, () => this.planTimer(instance, contact, job));
   }
 
@@ -125,15 +129,16 @@ export class ConversationStepService {
     instance: InstanceContext,
     contact: string,
     plan: (fresh: boolean) => Promise<StepPlan | null>,
-  ): Promise<BotWebhookCall[]> {
+  ): Promise<void> {
     for (let attempt = 1; attempt <= STEP_ATTEMPTS; attempt += 1) {
       const planned = await plan(attempt > 1);
       if (planned === null) {
-        return [];
+        return;
       }
       try {
         const outcome = await this.writer.write(planned);
-        return await this.afterCommit.run(planned, outcome);
+        await this.afterCommit.run(planned, outcome);
+        return;
       } catch (error) {
         if (!(error instanceof WriteConflictError)) {
           throw error;
@@ -158,7 +163,12 @@ export class ConversationStepService {
     if (instance.botId === null) {
       return { skip: 'no_bot', conversationId: null };
     }
-    const conversation = await this.loader.load(instance, message.contact, { fresh });
+    let conversation = await this.loader.load(instance, message.contact, { fresh });
+    if (conversation?.handoff && !fresh) {
+      // ARCH-09: a skip writes no conversation, so no version check finds a stale cache entry. A
+      // handoff is rare: read PostgreSQL before the bot ignores the message.
+      conversation = await this.loader.load(instance, message.contact, { fresh: true });
+    }
     if (conversation?.handoff) {
       return { skip: 'handoff', conversationId: conversation.id };
     }
@@ -212,6 +222,7 @@ export class ConversationStepService {
       result,
       previousMenu: null,
       messageId: message.id,
+      timeoutsInRow: 0,
       now,
     });
   }
@@ -229,14 +240,17 @@ export class ConversationStepService {
       conversation.botVersion,
     );
     const input = mapMenuReply(toEngineInput(message.content), conversation.lastMenu);
-    const external = this.http.externalCaller({
-      conversation_id: conversation.id,
-      instance_id: instance.instanceId,
-      external_ref: instance.externalRef,
-      contact: conversation.contact,
-      bot_id: bot.botSlug,
-      bot_version: bot.version,
-    });
+    const external = this.http.externalCaller(
+      {
+        conversation_id: conversation.id,
+        instance_id: instance.instanceId,
+        external_ref: instance.externalRef,
+        contact: conversation.contact,
+        bot_id: bot.botSlug,
+        bot_version: bot.version,
+      },
+      { tenantId: instance.tenantId, botId: bot.botId },
+    );
     const result = await handleInbound(bot.definition, toSnapshot(conversation), input, {
       now,
       external,
@@ -250,6 +264,7 @@ export class ConversationStepService {
       result,
       previousMenu: conversation.lastMenu,
       messageId: message.id,
+      timeoutsInRow: 0,
       now,
     });
   }
@@ -271,11 +286,9 @@ export class ConversationStepService {
         conversation.botId,
         conversation.botVersion,
       );
-      const result = handleTimeout(bot.definition, toSnapshot(conversation), {
-        timerState: job.state,
-        timerVersion: job.conversationVersion,
-        now,
-      });
+      const timeoutsInRow = conversation.timeoutsInRow + 1;
+      const fired = handleTimeout(bot.definition, toSnapshot(conversation), timerInput(job, now));
+      const result = this.limitTimeouts(fired, timeoutsInRow, conversation.id);
       this.metrics.timers.inc({ result: result.persist ? 'fired' : 'stale' });
       const plan = await this.plan({
         instance,
@@ -286,6 +299,7 @@ export class ConversationStepService {
         result,
         previousMenu: conversation.lastMenu,
         messageId: null,
+        timeoutsInRow,
         now,
       });
       return result.persist ? plan : null;
@@ -293,6 +307,26 @@ export class ConversationStepService {
       await this.dataError(error, instance, conversation.id);
       return null;
     }
+  }
+
+  /**
+   * SEC-04: a timeout can go back to its own state, so a bot can send messages for ever without a user.
+   * After `BOT_MAX_TIMEOUTS_IN_ROW` timeouts without an inbound message, the step arms no new timer.
+   */
+  private limitTimeouts(
+    result: EngineResult,
+    timeoutsInRow: number,
+    conversationId: string,
+  ): EngineResult {
+    if (!result.persist || result.timer === null || timeoutsInRow < this.maxTimeoutsInRow) {
+      return result;
+    }
+    this.metrics.timers.inc({ result: 'limit' });
+    this.logger.warn(
+      { conversation_id: conversationId, timeouts_in_row: timeoutsInRow },
+      'state timeouts in a row reached the limit; no timer is armed until the next inbound message',
+    );
+    return { ...result, timer: null };
   }
 
   private async plan(input: PlanInput): Promise<StepPlan> {
@@ -310,6 +344,7 @@ export class ConversationStepService {
       bot: input.bot,
       result: input.result,
       lastMenu: menuAfterActions(input.result.actions, input.previousMenu),
+      timeoutsInRow: input.timeoutsInRow,
       messageId: input.messageId,
       now: input.now,
     };
@@ -342,7 +377,8 @@ export class ConversationStepService {
       { err: error, conversation_id: conversationId },
       'bot data error; the input is skipped',
     );
-    await this.alerts.notify({
+    // ARCH-20: the caller holds the conversation lock; a slow Discord must not hold it.
+    void this.alerts.notify({
       severity: 'warning',
       title: 'Bot data error in a conversation step',
       details: { tenant_id: instance.tenantId, conversation_id: conversationId, error: error.name },

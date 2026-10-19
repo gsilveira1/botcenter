@@ -16,6 +16,9 @@ Commands:
   key:list             --tenant <id|slug>
   key:revoke           --key <prefix|id>
   key:rotate           --key <prefix|id> [--name <text>]
+  raw-events:replay    --id <raw event id>   (queue the events again, without the dedupe check)
+  instances:resync-webhook                   (write the webhook URL and secret of the provider again
+                                              for every active instance; exit code 1 when one fails)
 
 Quota options: --max-instances <n> --max-messages-per-day <n> --retention-days <n>
                --rate-limit-per-minute <n> --instance-rate-limit-per-minute <n>
@@ -26,6 +29,7 @@ const OPTIONS = {
   slug: { type: 'string' },
   tenant: { type: 'string' },
   key: { type: 'string' },
+  id: { type: 'string' },
   scopes: { type: 'string' },
   instances: { type: 'string' },
   'allowed-ips': { type: 'string' },
@@ -152,9 +156,18 @@ async function execute(
           'Store the key now. It is not shown again. Revoke the old key after the client changed it.',
       };
     }
+    case 'raw-events:replay':
+      return admin.replayRawEvent(text(values, 'id', true)!, actor);
+    case 'instances:resync-webhook':
+      return admin.resyncInstanceWebhooks(actor);
     default:
       throw new UsageError(`Unknown command: ${command}`);
   }
+}
+
+function hasFailures(result: unknown): boolean {
+  const failed = (result as { failed?: unknown } | null)?.failed;
+  return Array.isArray(failed) && failed.length > 0;
 }
 
 /** Runs one admin command. Returns the exit code. */
@@ -177,7 +190,8 @@ export async function runAdminCli(argv: string[], admin: AdminService, io: CliIo
   try {
     const result = await execute(command, parsed.values, admin, `cli:${operator}`);
     io.out(JSON.stringify(result, null, 2));
-    return 0;
+    // A partial failure is not silent: the JSON lists it, and the exit code is 1.
+    return hasFailures(result) ? 1 : 0;
   } catch (error) {
     if (error instanceof UsageError) {
       io.err(`${error.message}\n\n${ADMIN_USAGE}`);

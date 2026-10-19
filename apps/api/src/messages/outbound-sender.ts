@@ -1,26 +1,24 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { MessageContent } from '@botcenter/contracts';
+import type { MessageContent, MessagePriority } from '@botcenter/contracts';
 import { ProviderError } from '@botcenter/whatsapp-provider';
 import type { OutboundContent, WhatsAppProvider } from '@botcenter/whatsapp-provider';
 import type { Job } from 'bullmq';
-import { ENV } from '../config/env';
-import type { AppEnv } from '../config/env';
 import { getLogger } from '../logging/logger';
 import { maskPhone } from '../logging/mask';
-import { MediaService, MediaUnavailableError } from '../media/media.service';
+import { MediaUnavailableError } from '../media/media.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WHATSAPP_PROVIDER } from '../provider/provider.tokens';
 import type { OutboundJob } from '../queues/queue-names';
-import { DelayedError } from '../queues/worker.factory';
+import { RetryLaterError } from '../queues/worker.factory';
 import { AlertService } from '../services/alert.service';
 import { MessageStatusWriter } from './message-status.writer';
 import type { StatusTarget } from './message-status.writer';
+import { OutboundMediaPreparer } from './outbound-media';
+import { OutboundOrder, orderWaitMs } from './outbound-order';
+import { OutboundRateGate, keepReadyAt } from './outbound-rate-gate';
 import { RetryableSendError, decideRetry } from './retry-policy';
 import type { OutboundFailureReason } from './retry-policy';
-import { InstanceTokenBucket } from './token-bucket';
-import { bucketLimits, warmUpFactor } from './warm-up';
-import type { BucketLimits } from './warm-up';
 
 export type SendOutcome = 'sent' | 'failed' | 'skipped';
 
@@ -33,6 +31,8 @@ const MESSAGE_SELECT = {
   instanceId: true,
   status: true,
   contact: true,
+  priority: true,
+  seq: true,
   content: true,
   typingDelayMs: true,
   createdAt: true,
@@ -63,6 +63,8 @@ interface OutboundMessage {
   instanceId: string;
   status: string;
   contact: string;
+  priority: MessagePriority;
+  seq: bigint;
   content: unknown;
   typingDelayMs: number | null;
   createdAt: Date;
@@ -88,9 +90,12 @@ const ALERT_REASONS: ReadonlySet<OutboundFailureReason> = new Set([
 
 /**
  * Processes one `send` job of the `outbound` queue:
- * 1. Load the message and its instance. A message that is not `queued` is done (idempotent job).
- * 2. Take a token from the bucket of the instance. Without a token, move the job back to the delayed set
- *    (not a failure, not an attempt) and count `botcenter_rate_limit_denied_total{scope="instance"}`.
+ * 1. Take a token from the bucket of the instance (`OutboundRateGate`), before any read of the row.
+ *    Without a token, the job goes back to the delayed set (not a failure, not an attempt).
+ * 2. Load the message and its instance. A message that is not `queued` is done (idempotent job).
+ *    When an older row of the same contact and priority is still `queued`, the job waits
+ *    (`RetryLaterError`, not an attempt): the sends of one contact go out in order (ARCH-02).
+ *    A job that does not send gives its token back.
  * 3. Send through the provider. Write `sent` or `failed`, with the `message.status` outbox event.
  * A retryable `ProviderError` throws `RetryableSendError`: BullMQ retries with the delay of the policy.
  */
@@ -103,11 +108,11 @@ export class OutboundSender {
     private readonly prisma: PrismaService,
     @Inject(WHATSAPP_PROVIDER) private readonly provider: WhatsAppProvider,
     private readonly writer: MessageStatusWriter,
-    private readonly bucket: InstanceTokenBucket,
-    private readonly media: MediaService,
+    private readonly gate: OutboundRateGate,
+    private readonly media: OutboundMediaPreparer,
     private readonly metrics: MetricsService,
     private readonly alerts: AlertService,
-    @Inject(ENV) private readonly env: AppEnv,
+    private readonly order: OutboundOrder,
   ) {
     this.sendDelay = metrics.histogram({
       name: 'botcenter_outbound_send_delay_seconds',
@@ -117,33 +122,28 @@ export class OutboundSender {
   }
 
   async process(job: Job<OutboundJob>): Promise<SendOutcome> {
+    // The token comes before the read of the row, so a rate-limited backlog does not read PostgreSQL.
+    const token = job.data.providerMessageId ? null : await this.gate.take(job);
     const message = await this.load(job.data);
     if (!message || message.status !== 'queued') {
+      await this.gate.refund(token);
       this.logger.debug({ status: message?.status ?? null }, 'message is not queued; the job ends');
       return 'skipped';
     }
-    const target = toTarget(message);
     const blocked = blockedReason(message.instance);
     if (blocked) {
-      return this.fail(target, blocked);
+      await this.gate.refund(token);
+      return this.fail(message, blocked);
     }
-    if (!job.data.providerMessageId) {
-      await this.takeToken(job, message);
+    if (!job.data.providerMessageId && (await this.order.hasOlderQueued(message))) {
+      await this.gate.refund(token);
+      return this.waitForOlder(job);
     }
     const result = await this.deliver(job, message);
     if (result.kind === 'failed') {
-      return this.fail(target, result.reason);
+      return this.fail(message, result.reason);
     }
     return this.markSent(job, message, result.providerMessageId);
-  }
-
-  /** The bucket limits of an instance today (rate of the instance and warm-up). */
-  limitsFor(instance: OutboundInstance, now = new Date()): BucketLimits {
-    const factor = warmUpFactor(instance.firstConnectedAt, now, {
-      days: this.env.OUTBOUND_WARMUP_DAYS,
-      startPercent: this.env.OUTBOUND_WARMUP_START_PERCENT,
-    });
-    return bucketLimits(instance.rateLimitPerMinute, this.env.OUTBOUND_BUCKET_BURST, factor);
   }
 
   private load(data: OutboundJob): Promise<OutboundMessage | null> {
@@ -153,15 +153,12 @@ export class OutboundSender {
     });
   }
 
-  private async takeToken(job: Job<OutboundJob>, message: OutboundMessage): Promise<void> {
-    const token = await this.bucket.take(message.instanceId, this.limitsFor(message.instance));
-    if (token.allowed) {
-      return;
-    }
-    this.metrics.rateLimitDeniedTotal.inc({ scope: 'instance' });
-    this.logger.debug({ wait_ms: token.waitMs }, 'no send token; the job waits');
-    await job.moveToDelayed(Date.now() + token.waitMs, job.token);
-    throw new DelayedError();
+  /** An older row of the same contact and priority is `queued`: throw `RetryLaterError` (ARCH-02). */
+  private async waitForOlder(job: Job<OutboundJob>): Promise<never> {
+    const waits = job.data.orderWaits ?? 0;
+    const delayMs = orderWaitMs(waits);
+    await keepReadyAt(job, Date.now() + delayMs, { orderWaits: waits + 1 });
+    throw new RetryLaterError(delayMs, 'older_message_queued');
   }
 
   private async deliver(job: Job<OutboundJob>, message: OutboundMessage): Promise<DeliveryResult> {
@@ -171,7 +168,7 @@ export class OutboundSender {
     }
     let content: OutboundContent;
     try {
-      content = await this.toProviderContent(message);
+      content = await this.media.content(job, message.tenantId, message.content as MessageContent);
     } catch (error) {
       if (error instanceof MediaUnavailableError) {
         return { kind: 'failed', reason: error.reason };
@@ -191,14 +188,6 @@ export class OutboundSender {
       }
       return this.onProviderError(job, message, error);
     }
-  }
-
-  private async toProviderContent(message: OutboundMessage): Promise<OutboundContent> {
-    const content = message.content as MessageContent;
-    if (content.type === 'media') {
-      return this.media.toProviderContent(message.tenantId, content);
-    }
-    return content;
   }
 
   /** Fails at once, fails after the last retry, or throws `RetryableSendError` to retry. */
@@ -247,6 +236,7 @@ export class OutboundSender {
     const sentAt = new Date();
     await this.writer.apply(toTarget(message), { status: 'sent', providerMessageId, at: sentAt });
     this.sendDelay.observe((sentAt.getTime() - message.createdAt.getTime()) / 1000);
+    await this.order.promoteNext(message);
     return 'sent';
   }
 
@@ -259,9 +249,13 @@ export class OutboundSender {
     }
   }
 
-  private async fail(target: StatusTarget, reason: OutboundFailureReason): Promise<SendOutcome> {
-    await this.writer.apply(target, { status: 'failed', reason, at: new Date() });
+  private async fail(
+    message: OutboundMessage,
+    reason: OutboundFailureReason,
+  ): Promise<SendOutcome> {
+    await this.writer.apply(toTarget(message), { status: 'failed', reason, at: new Date() });
     this.logger.info({ reason }, 'outbound message failed');
+    await this.order.promoteNext(message);
     return 'failed';
   }
 }

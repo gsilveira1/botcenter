@@ -164,7 +164,7 @@ describe('PUT /v1/bots/{id}', () => {
     expect(refused.json().code).toBe('INSTANCE_NOT_ALLOWED');
   });
 
-  it('does not let a key with an instance list unbind the other instances of the bot', async () => {
+  it('refuses a key with an instance list for a bot that also serves another instance (SEC-03)', async () => {
     const { tenant, instances, key } = await setup({ instances: 2 });
     const [first, second] = instances as [(typeof instances)[0], (typeof instances)[0]];
     await putBot(key, 'shared', { instance_ids: [first.id, second.id] });
@@ -174,11 +174,15 @@ describe('PUT /v1/bots/{id}', () => {
       instanceIds: [first.id],
     });
     const response = await putBot(restricted.key, 'shared', { instance_ids: [] });
-    expect(response.statusCode).toBe(200);
-    expect(response.json().instance_ids).toEqual([]);
+    expect(response.statusCode).toBe(403);
+    expect(response.json().code).toBe('INSTANCE_NOT_ALLOWED');
     const rows = await h.prisma.instance.findMany({ where: { tenantId: tenant.id } });
-    expect(rows.find((row) => row.id === first.id)?.botId).toBeNull();
+    expect(rows.find((row) => row.id === first.id)?.botId).not.toBeNull();
     expect(rows.find((row) => row.id === second.id)?.botId).not.toBeNull();
+    // The key can still move its own instance to another bot.
+    const moved = await putBot(restricted.key, 'own', { instance_ids: [first.id] });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json().instance_ids).toEqual([first.id]);
   });
 
   it('moves an instance from another bot to this bot', async () => {

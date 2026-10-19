@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { OnModuleInit } from '@nestjs/common';
+import { Prisma } from '../generated/prisma/client';
 import { OUTBOUND_SWEEP_JOB } from '../messages/outbound-job';
 import { PrismaService } from '../prisma/prisma.service';
 import { oldestWaitingDelaySeconds } from '../queues/queue-metrics.collector';
@@ -53,6 +54,31 @@ export function webhookTenantFailing(counts: WebhookTenantCounts): boolean {
 }
 
 const WEBHOOK_INCIDENT_PREFIX = 'webhook-failures:';
+
+/**
+ * The send counts of the window. ARCH-14: the index `(direction, createdAt)` of `messages` serves the
+ * filter, so the query does not read the full table (90 days of rows) every minute.
+ */
+export function sendCountsQuery(since: Date): Prisma.Sql {
+  return Prisma.sql`
+    SELECT count(*) FILTER (WHERE "status" = 'failed')::int AS "failed",
+           count(*) FILTER (WHERE "status" <> 'queued')::int AS "finished"
+    FROM "messages"
+    WHERE "direction" = 'outbound' AND "createdAt" >= ${since}`;
+}
+
+/** The webhook counts of each tenant in the window. ARCH-14: the index `(updatedAt)` serves the filter. */
+export function webhookCountsQuery(since: Date): Prisma.Sql {
+  return Prisma.sql`
+    SELECT "tenantId"::text AS "tenantId",
+           count(*) FILTER (WHERE "status" = 'dead')::int AS "dead",
+           count(*) FILTER (WHERE "status" IN ('failed', 'dead'))::int AS "failing",
+           count(*) FILTER (WHERE "attempts" > 0)::int AS "attempted"
+    FROM "webhook_deliveries"
+    WHERE "updatedAt" >= ${since}
+      AND "lastError" IS DISTINCT FROM ${WEBHOOK_DELETED_ERROR}
+    GROUP BY "tenantId"`;
+}
 
 type Outcome = 'opened' | 'resolved' | 'unchanged';
 
@@ -109,11 +135,9 @@ export class OperationalAlertsTask implements MaintenanceTask, OnModuleInit {
   }
 
   async checkSendFailureRate(now: Date): Promise<Outcome> {
-    const [counts = { failed: 0, finished: 0 }] = await this.prisma.$queryRaw<SendCounts[]>`
-      SELECT count(*) FILTER (WHERE "status" = 'failed')::int AS "failed",
-             count(*) FILTER (WHERE "status" <> 'queued')::int AS "finished"
-      FROM "messages"
-      WHERE "direction" = 'outbound' AND "createdAt" >= ${before(now, SEND_FAILURE_WINDOW_MS)}`;
+    const [counts = { failed: 0, finished: 0 }] = await this.prisma.$queryRaw<SendCounts[]>(
+      sendCountsQuery(before(now, SEND_FAILURE_WINDOW_MS)),
+    );
     const rate = counts.finished > 0 ? counts.failed / counts.finished : 0;
     const details = { ...counts, rate_percent: Math.round(rate * 1000) / 10, window_minutes: 10 };
     return this.incidents.update(
@@ -139,15 +163,9 @@ export class OperationalAlertsTask implements MaintenanceTask, OnModuleInit {
 
   /** One incident for each tenant. A tenant without failures in the window closes its open incident. */
   async checkWebhookFailures(now: Date): Promise<Outcome[]> {
-    const rows = await this.prisma.$queryRaw<WebhookTenantCounts[]>`
-      SELECT "tenantId"::text AS "tenantId",
-             count(*) FILTER (WHERE "status" = 'dead')::int AS "dead",
-             count(*) FILTER (WHERE "status" IN ('failed', 'dead'))::int AS "failing",
-             count(*) FILTER (WHERE "attempts" > 0)::int AS "attempted"
-      FROM "webhook_deliveries"
-      WHERE "updatedAt" >= ${before(now, WEBHOOK_FAILURE_WINDOW_MS)}
-        AND "lastError" IS DISTINCT FROM ${WEBHOOK_DELETED_ERROR}
-      GROUP BY "tenantId"`;
+    const rows = await this.prisma.$queryRaw<WebhookTenantCounts[]>(
+      webhookCountsQuery(before(now, WEBHOOK_FAILURE_WINDOW_MS)),
+    );
     const failing = new Map(
       rows.filter(webhookTenantFailing).map((row) => [WEBHOOK_INCIDENT_PREFIX + row.tenantId, row]),
     );

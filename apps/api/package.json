@@ -19,7 +19,9 @@
     "admin:key:create": "node dist/scripts/admin.js key:create",
     "admin:key:list": "node dist/scripts/admin.js key:list",
     "admin:key:revoke": "node dist/scripts/admin.js key:revoke",
-    "admin:key:rotate": "node dist/scripts/admin.js key:rotate"
+    "admin:key:rotate": "node dist/scripts/admin.js key:rotate",
+    "admin:raw-events:replay": "node dist/scripts/admin.js raw-events:replay",
+    "admin:instances:resync-webhook": "node dist/scripts/admin.js instances:resync-webhook"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1152.0",

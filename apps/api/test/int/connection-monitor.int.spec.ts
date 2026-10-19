@@ -6,6 +6,8 @@ import {
   ConnectionMonitorService,
   INCIDENT_ALERT_AFTER_MS,
   RECONCILE_AFTER_MS,
+  RECONCILE_BATCH,
+  RECONCILE_CONNECTED_BATCH,
 } from '../../src/instances/connection-monitor.service';
 import { InstanceStatusService } from '../../src/instances/instance-status.service';
 import { InstancesWorkerModule } from '../../src/instances/instances.module';
@@ -183,6 +185,41 @@ describe('ConnectionMonitorService.reconcile', () => {
     await statuses.transition({ providerName: down.providerName }, { next: 'disconnected' });
     h.provider.failNext('getConnectionState', 'unavailable');
     expect(await monitor.reconcile(later)).toEqual({ checked: 0, changed: 0, stopped: true });
+  });
+});
+
+describe('ConnectionMonitorService.reconcile of connected instances', () => {
+  it('finds a lost connection when the connecting webhook was lost, and the alert follows', async () => {
+    const instance = await instanceIn('connected');
+    // Evolution lost the connection, but the `connecting` webhook never arrived.
+    h.provider.setState(instance.providerName, 'connecting');
+    const at = new Date(Date.now() + RECONCILE_AFTER_MS + 1_000);
+
+    expect(await monitor.reconcile(at)).toMatchObject({ checked: 1, changed: 1 });
+    const row = await h.prisma.instance.findUniqueOrThrow({ where: { id: instance.id } });
+    expect(row.status).toBe('connecting');
+    expect(row.disconnectedSince).toEqual(at);
+    expect(await monitor.checkIncidents(minutes(at, 2.5))).toMatchObject({ alerted: 1 });
+  });
+
+  it('reads a sample of connected instances, oldest provider state first, and not again at once', async () => {
+    const first = await instanceIn('connected');
+    const second = await instanceIn('connected');
+    h.provider.setState(first.providerName, 'connected');
+    h.provider.setState(second.providerName, 'connected');
+    const at = new Date(Date.now() + RECONCILE_AFTER_MS + 1_000);
+    const reads = () =>
+      h.provider.calls.filter(
+        (call) =>
+          call.method === 'getConnectionState' &&
+          [first.providerName, second.providerName].includes(call.args[0] as string),
+      ).length;
+    const before = reads();
+    expect(await monitor.reconcile(at)).toMatchObject({ checked: 2, changed: 0 });
+    expect(reads() - before).toBe(2);
+    // The read writes the provider time, so the next run within 10 minutes skips them.
+    expect(await monitor.reconcile(minutes(at, 1))).toMatchObject({ checked: 0 });
+    expect(RECONCILE_CONNECTED_BATCH).toBeLessThanOrEqual(RECONCILE_BATCH);
   });
 });
 

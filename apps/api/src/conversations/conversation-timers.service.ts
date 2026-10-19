@@ -22,12 +22,15 @@ export class ConversationTimersService {
     private readonly metrics: ConversationMetrics,
   ) {}
 
-  /** Adds the timer job. A failure is logged and sent as an alert: the conversation has no timeout then. */
+  /**
+   * Adds the timer job. A failure is logged and sent as an alert, and the result is `false`: the
+   * `sweep-inbound` job adds the timer again later (ARCH-08).
+   */
   async schedule(
     plan: TimerPlan,
     target: { tenantId: string; conversationId: string },
     now: Date,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await this.queues.add(
         'timers',
@@ -41,18 +44,20 @@ export class ConversationTimersService {
         { jobId: plan.jobId, delay: Math.max(0, plan.fireAt.getTime() - now.getTime()) },
       );
       this.metrics.timers.inc({ result: 'scheduled' });
+      return true;
     } catch (error) {
       this.metrics.timers.inc({ result: 'schedule_failed' });
       this.logger.error(
         { err: error, conversation_id: target.conversationId, timer_job_id: plan.jobId },
-        'state timer not scheduled; the state has no timeout until the next message',
+        'state timer not scheduled; the sweep adds it again later',
       );
-      await this.alerts.notify({
+      void this.alerts.notify({
         severity: 'warning',
         title: 'Conversation state timer not scheduled',
         details: { conversation_id: target.conversationId, error: (error as Error).name },
         dedupeKey: 'conversation-timer-schedule',
       });
+      return false;
     }
   }
 

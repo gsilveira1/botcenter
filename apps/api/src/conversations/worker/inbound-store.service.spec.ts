@@ -4,8 +4,9 @@ import { Prisma } from '../../generated/prisma/client';
 import { MetricsService } from '../../metrics/metrics.service';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { OutboxService } from '../../services/outbox.service';
-import type { TenantsService } from '../../services/tenants.service';
+import type { QuotaService } from '../../rate-limit/quota.service';
 import { ConversationMetrics } from '../conversation-metrics';
+import { contactKey } from '../conversation-keys';
 import type { InboundMediaService } from './inbound-media.service';
 import { InboundStoreService } from './inbound-store.service';
 
@@ -33,10 +34,11 @@ const stored = {
   botPending: true,
 };
 
-function build(options: { existing?: boolean; handoff?: boolean } = {}) {
+function build(options: { existing?: boolean; handoff?: boolean; limited?: boolean } = {}) {
   const message = {
     findUnique: vi.fn(async () => (options.existing ? stored : null)),
     create: vi.fn(async () => stored),
+    updateMany: vi.fn(async () => ({ count: 1 })),
   };
   const conversation = {
     findUnique: vi.fn(async () =>
@@ -50,14 +52,17 @@ function build(options: { existing?: boolean; handoff?: boolean } = {}) {
   };
   const outbox = { enqueue: vi.fn(async () => 'e1') };
   const media = { copy: vi.fn() };
+  const quota = { consume: vi.fn(async () => ({ allowed: !options.limited })) };
+  const metrics = new ConversationMetrics(new MetricsService(testEnv()));
   const service = new InboundStoreService(
+    testEnv({ BOT_INBOUND_LIMIT_PER_MINUTE: '30' }),
     { forTenant: () => scoped } as unknown as PrismaService,
     outbox as unknown as OutboxService,
-    {} as TenantsService,
     media as unknown as InboundMediaService,
-    new ConversationMetrics(new MetricsService(testEnv())),
+    metrics,
+    quota as unknown as QuotaService,
   );
-  return { service, message, outbox, media };
+  return { service, message, outbox, media, quota, metrics };
 }
 
 describe('InboundStoreService', () => {
@@ -118,5 +123,70 @@ describe('InboundStoreService', () => {
     await expect(race.service.store(instance, event, new Date())).resolves.toMatchObject({
       messageId: 'm1',
     });
+  });
+
+  it('gives the declared size of a media message to the media copy (ARCH-03, SEC-02)', async () => {
+    const { service, message, media } = build();
+    const content = {
+      type: 'media',
+      media_type: 'video',
+      mime_type: 'video/mp4',
+      file_length: 734_003_200,
+      media_status: 'pending',
+    };
+    message.create.mockResolvedValueOnce({ ...stored, content } as never);
+    media.copy.mockResolvedValueOnce({ status: 'too_large' } as never);
+    await service.store(
+      instance,
+      {
+        ...event,
+        content: {
+          type: 'media',
+          mediaType: 'video',
+          mimeType: 'video/mp4',
+          fileLength: 734_003_200,
+        },
+      },
+      new Date(),
+    );
+    expect(message.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ content }) }),
+    );
+    expect(media.copy).toHaveBeenCalledWith(
+      instance,
+      {
+        messageId: 'm1',
+        providerMessageId: 'wamid',
+        mimeType: 'video/mp4',
+        declaredBytes: 734_003_200,
+      },
+      expect.any(Date),
+    );
+  });
+
+  it('stores the message but does not give it to the bot above the limit of the contact (SEC-04)', async () => {
+    const { service, message, quota, metrics, outbox } = build({ limited: true });
+    await service.store(instance, event, new Date());
+    expect(quota.consume).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'bot-inbound-contact',
+        subject: `i1:${contactKey(event.from)}`,
+        window: 'minute',
+        limit: 30,
+      }),
+    );
+    expect(message.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ botPending: false }) }),
+    );
+    expect(outbox.enqueue).toHaveBeenCalled();
+    expect((await metrics.skipped.get()).values).toEqual([
+      { labels: { reason: 'rate_limited' }, value: 1 },
+    ]);
+  });
+
+  it('does not count a message that the bot does not get anyway', async () => {
+    const { service, quota } = build({ handoff: true });
+    await service.store(instance, event, new Date());
+    expect(quota.consume).not.toHaveBeenCalled();
   });
 });

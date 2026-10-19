@@ -3,6 +3,7 @@ import type { AuthContext } from '../auth/auth-context';
 import { AppError } from '../common/errors/app-error';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { AuditService } from '../services/audit.service';
+import type { WebhookSecrets } from '../webhooks/webhook-secrets';
 import { BotsService } from './bots.service';
 
 const auth: AuthContext = {
@@ -18,6 +19,7 @@ function build() {
   const service = new BotsService(
     { forTenant } as unknown as PrismaService,
     { record: vi.fn() } as unknown as AuditService,
+    { seal: vi.fn() } as unknown as WebhookSecrets,
   );
   return { service, forTenant };
 }

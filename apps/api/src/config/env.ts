@@ -106,6 +106,8 @@ export const EnvSchema = z.object({
   S3_ACCESS_KEY_ID: z.string().min(1),
   S3_SECRET_ACCESS_KEY: z.string().min(1),
   S3_FORCE_PATH_STYLE: booleanString.default(false),
+  /** Time limit of one object storage request (the worker shutdown budget counts it). */
+  S3_REQUEST_TIMEOUT_MS: positiveInt.max(120_000).default(15_000),
 
   /** Discord webhook of the operations channel. Without it, `AlertService` logs the alert at `error`. */
   ALERT_DISCORD_WEBHOOK_URL: optional(z.url({ protocol: /^https$/ })),
@@ -121,8 +123,14 @@ export const EnvSchema = z.object({
   INTERNAL_WEBHOOK_BODY_LIMIT_BYTES: positiveInt.default(8 * MIB),
   /** Keep-alive time of an idle HTTP connection. Keep it above the idle time of Caddy. */
   KEEP_ALIVE_TIMEOUT_MS: positiveInt.default(65_000),
-  /** Maximum time of a graceful shutdown (current requests and jobs). */
+  /** Maximum time of a graceful shutdown of the API process (current requests). */
   SHUTDOWN_TIMEOUT_MS: positiveInt.default(25_000),
+  /**
+   * Maximum time of a graceful shutdown of the worker process (ARCH-11). It must be longer than the
+   * longest job (`longestWorkerJobMs` in `common/shutdown.ts`), or the worker does not start. The
+   * container stop time (Compose `stop_grace_period`) must be longer again: 110 s for the default.
+   */
+  WORKER_SHUTDOWN_TIMEOUT_MS: positiveInt.max(600_000).default(100_000),
 
   /** Internal HTTP listener of the worker process (`/metrics`, `/health/live`, `/health/ready`). */
   WORKER_METRICS_PORT: positiveInt.max(65535).default(9464),
@@ -151,10 +159,50 @@ export const EnvSchema = z.object({
   OUTBOUND_WARMUP_DAYS: z.coerce.number().int().min(0).max(90).default(7),
   /** Warm-up: the send rate on the first day, in percent of the full rate. The rate grows linearly. */
   OUTBOUND_WARMUP_START_PERCENT: positiveInt.max(100).default(20),
-  /** Validity of the pre-signed upload URL of `POST /v1/media`. */
-  MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(900),
+  /**
+   * Maximum `queued` outbound rows of one instance (SEC-04). Above it, `POST /v1/messages` answers 429
+   * `QUOTA_EXCEEDED` and a new bot reply is written as `failed` (`instance_queue_full`).
+   */
+  OUTBOUND_MAX_QUEUED_PER_INSTANCE: positiveInt.max(1_000_000).default(1_000),
+  /**
+   * Maximum age of a `queued` outbound row. The outbound sweep writes an older row as `failed`
+   * (`expired`), with the `message.status` event. Default: 24 h.
+   */
+  OUTBOUND_QUEUED_MAX_AGE_SECONDS: positiveInt
+    .min(600)
+    .max(30 * 86_400)
+    .default(86_400),
+  /**
+   * Validity of the pre-signed upload URL of `POST /v1/media`. The URL can be used again while it is
+   * valid, so it is short (SEC-17).
+   */
+  MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(300),
+  /** Validity of the signed download URL of `GET /v1/media/{id}`. */
+  MEDIA_READ_URL_TTL_SECONDS: positiveInt.max(86_400).default(900),
+  /** Maximum `POST /v1/media` calls of one tenant in one UTC day (SEC-17). */
+  MEDIA_UPLOADS_PER_DAY: positiveInt.max(1_000_000).default(1_000),
+  /** Maximum sum of the declared sizes of the live outbound media of one tenant (SEC-17). Default 5 GiB. */
+  MEDIA_MAX_BYTES_PER_TENANT: positiveInt.default(5 * 1024 * MIB),
   /** Validity of the pre-signed download URL that the provider gets for a media message. */
   MEDIA_SEND_URL_TTL_SECONDS: positiveInt.max(86_400).default(900),
+  /**
+   * Time limit of the download of a client media `url` by the outbound worker (SEC-01). The worker stores
+   * the file in the bucket and gives the provider a pre-signed URL. At most 30 s (the external HTTP limit).
+   */
+  OUTBOUND_MEDIA_DOWNLOAD_TIMEOUT_MS: positiveInt.max(30_000).default(20_000),
+
+  /**
+   * Inbound media downloads that one worker process runs at the same time (ARCH-03, SEC-02). Each
+   * download can keep about 60 MiB in memory (the base64 answer, its parse, and the file).
+   */
+  INBOUND_MEDIA_DOWNLOAD_CONCURRENCY: positiveInt.max(10).default(2),
+  /**
+   * Inbound messages of one contact on one instance in one minute that the bot answers (SEC-04). The
+   * worker stores each message above the limit, but the bot does not run for it.
+   */
+  BOT_INBOUND_LIMIT_PER_MINUTE: positiveInt.max(10_000).default(30),
+  /** State timeouts in a row without an inbound message (SEC-04). After the last one, no timer is armed. */
+  BOT_MAX_TIMEOUTS_IN_ROW: positiveInt.max(100).default(3),
 
   /**
    * Test and development only: the SSRF guard of the external HTTP client accepts private, loopback, and

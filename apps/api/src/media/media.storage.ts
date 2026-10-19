@@ -20,6 +20,8 @@ export function createS3Client(env: AppEnv): S3Client {
     endpoint: env.S3_ENDPOINT,
     region: env.S3_REGION,
     forcePathStyle: env.S3_FORCE_PATH_STYLE,
+    // A time limit for each request, so that a slow bucket cannot hold a job past the shutdown time.
+    requestHandler: { connectionTimeout: 5_000, requestTimeout: env.S3_REQUEST_TIMEOUT_MS },
     credentials: {
       accessKeyId: env.S3_ACCESS_KEY_ID,
       secretAccessKey: env.S3_SECRET_ACCESS_KEY,
