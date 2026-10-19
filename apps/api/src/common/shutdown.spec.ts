@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { EXTERNAL_TIMEOUT_MS_MAX } from '@botcenter/contracts';
 import { testEnv } from '../../test/support/env';
 import { TYPING_DELAY } from '../conversations/typing-delay';
-import { BOT_WEBHOOK_TIMEOUT_MS } from '../conversations/worker/bot-http';
 import {
   BOT_STEP_HTTP_BUDGET_MS,
   MAX_TYPING_DELAY_MS,
@@ -48,7 +47,7 @@ describe('worker shutdown budget (ARCH-11)', () => {
     const env = testEnv({ ROLE: 'worker' });
     // Outbound: media download 20 s + bucket 15 s + send 30 s + typing 4 s + state read 10 s = 79 s.
     // Inbound: media download 60 s + bucket 15 s + external condition 5 s + call_webhook 2 x 5 s = 90 s.
-    expect(longestWorkerJobMs(env)).toBe(90_000);
+    expect(longestWorkerJobMs(env)).toBe(80_000);
     expect(env.WORKER_SHUTDOWN_TIMEOUT_MS).toBeGreaterThanOrEqual(
       longestWorkerJobMs(env) + SHUTDOWN_MARGIN_MS,
     );
@@ -58,7 +57,7 @@ describe('worker shutdown budget (ARCH-11)', () => {
   it('refuses a shutdown time that is shorter than the longest job', () => {
     expect(() =>
       assertWorkerShutdownBudget(testEnv({ ROLE: 'worker', WORKER_SHUTDOWN_TIMEOUT_MS: '25000' })),
-    ).toThrow(/WORKER_SHUTDOWN_TIMEOUT_MS \(25000 ms\) must be at least 95000 ms/);
+    ).toThrow(/WORKER_SHUTDOWN_TIMEOUT_MS \(25000 ms\) must be at least 85000 ms/);
     expect(() =>
       assertWorkerShutdownBudget(testEnv({ ROLE: 'worker', EVOLUTION_SEND_TIMEOUT_MS: '120000' })),
     ).toThrow(/WORKER_SHUTDOWN_TIMEOUT_MS/);
@@ -66,6 +65,6 @@ describe('worker shutdown budget (ARCH-11)', () => {
 
   it('uses the limits of the other slices', () => {
     expect(MAX_TYPING_DELAY_MS).toBe(TYPING_DELAY.maxMs);
-    expect(BOT_STEP_HTTP_BUDGET_MS).toBe(EXTERNAL_TIMEOUT_MS_MAX + 2 * BOT_WEBHOOK_TIMEOUT_MS);
+    expect(BOT_STEP_HTTP_BUDGET_MS).toBe(EXTERNAL_TIMEOUT_MS_MAX);
   });
 });

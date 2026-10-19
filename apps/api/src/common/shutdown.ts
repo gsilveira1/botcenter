@@ -1,14 +1,15 @@
 import type { Logger } from 'pino';
+import { EXTERNAL_TIMEOUT_MS_MAX, WEBHOOK_REQUEST_TIMEOUT_MS } from '@botcenter/contracts';
 import type { AppEnv } from '../config/env';
 import { flushLogs } from '../logging/logger';
 
 /** The longest typing delay of a bot reply (`TYPING_DELAY.maxMs` of the conversations slice). */
 export const MAX_TYPING_DELAY_MS = 4_000;
 /**
- * The bot HTTP time of one conversation step: the `external` condition (at most 5 s) and one
- * `call_webhook` action (5 s, one more attempt). A step with more `call_webhook` actions can take longer.
+ * The bot HTTP time of one conversation step: only the `external` condition. The `call_webhook` actions
+ * are rows of `bot_webhook_calls` that the `webhooks` queue delivers in their own jobs (ARCH-04).
  */
-export const BOT_STEP_HTTP_BUDGET_MS = 5_000 + 2 * 5_000;
+export const BOT_STEP_HTTP_BUDGET_MS = EXTERNAL_TIMEOUT_MS_MAX;
 /** The time after the longest job for the close of the queues, Redis, and PostgreSQL. */
 export const SHUTDOWN_MARGIN_MS = 5_000;
 
@@ -16,7 +17,8 @@ export const SHUTDOWN_MARGIN_MS = 5_000;
  * The longest job of the worker process with side effects outside Bot Center (ARCH-11):
  * - an outbound send: the download of a media `url`, the bucket write, the send with the typing delay,
  *   and the state read after a failed send;
- * - an inbound message: the media download from the provider, the bucket write, and the bot step.
+ * - an inbound message: the media download from the provider, the bucket write, and the bot step;
+ * - a webhook delivery or a bot `call_webhook` call: one HTTP request to the client.
  * The maintenance jobs are idempotent: a stop can cut them, and the next run continues.
  */
 export function longestWorkerJobMs(env: AppEnv): number {
@@ -28,7 +30,7 @@ export function longestWorkerJobMs(env: AppEnv): number {
     env.EVOLUTION_REQUEST_TIMEOUT_MS;
   const inbound =
     env.EVOLUTION_MEDIA_TIMEOUT_MS + env.S3_REQUEST_TIMEOUT_MS + BOT_STEP_HTTP_BUDGET_MS;
-  return Math.max(outbound, inbound);
+  return Math.max(outbound, inbound, WEBHOOK_REQUEST_TIMEOUT_MS);
 }
 
 /**
