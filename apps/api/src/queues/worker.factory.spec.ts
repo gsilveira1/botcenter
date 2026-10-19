@@ -5,7 +5,7 @@ import { testEnv } from '../../test/support/env';
 import { MetricsService } from '../metrics/metrics.service';
 import type { AlertService } from '../services/alert.service';
 import { RetryLaterError } from './retry-later';
-import { WorkerFactory } from './worker.factory';
+import { WorkerFactory, isDelayedError } from './worker.factory';
 
 type Run = (queue: string, job: Job, processor: (job: Job) => Promise<unknown>) => Promise<unknown>;
 
@@ -48,5 +48,16 @@ describe('WorkerFactory', () => {
       }),
     ).rejects.toThrow('boom');
     expect(await count(metrics, 'failed')).toBe(1);
+  });
+});
+
+describe('isDelayedError', () => {
+  it('knows the BullMQ delay error by class and by name', () => {
+    expect(isDelayedError(new DelayedError())).toBe(true);
+    const copy = new Error('moved');
+    copy.name = 'DelayedError';
+    expect(isDelayedError(copy)).toBe(true);
+    expect(isDelayedError(new Error('other'))).toBe(false);
+    expect(isDelayedError(undefined)).toBe(false);
   });
 });

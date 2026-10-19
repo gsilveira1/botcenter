@@ -14,11 +14,21 @@ import { DEFAULT_JOB_OPTIONS } from './queues.service';
 import type { JobPayloads, QueueName } from './queue-names';
 import { RetryLaterError } from './retry-later';
 
-export { RetryLaterError, UnrecoverableError };
+export { DelayedError, RetryLaterError, UnrecoverableError };
+
+/**
+ * True for the error that a processor throws after `job.moveToDelayed(...)`. The job waits again; this is
+ * not a failure and not an attempt (for example, no token in the send rate limit).
+ */
+export function isDelayedError(error: unknown): boolean {
+  return error instanceof DelayedError || (error as Error | undefined)?.name === 'DelayedError';
+}
 
 /**
  * The function that processes one job. Throw to retry (with backoff); throw `UnrecoverableError` to fail at
- * once; throw `RetryLaterError` to run the job again after a short delay without a failed attempt.
+ * once. Call `job.moveToDelayed(timestamp, job.token)` and throw `DelayedError` to wait without an attempt,
+ * or throw `RetryLaterError` (a processor without access to the job, for example an inbound handler):
+ * the factory then moves the job back to the delayed set.
  */
 export type JobProcessor<N extends QueueName> = (job: Job<JobPayloads[N]>) => Promise<unknown>;
 
@@ -109,9 +119,11 @@ export class WorkerFactory implements OnModuleDestroy {
         const result = await processor(job);
         this.metrics.jobsTotal.inc({ queue, result: 'completed' });
         return result;
-      } catch (error) {
-        if (error instanceof RetryLaterError) {
-          await this.delay(queue, job, error);
+      } catch (caught) {
+        const error = caught instanceof RetryLaterError ? await this.delay(job, caught) : caught;
+        if (isDelayedError(error)) {
+          this.metrics.jobsTotal.inc({ queue, result: 'delayed' });
+          throw error;
         }
         this.metrics.jobsTotal.inc({ queue, result: 'failed' });
         this.logger.warn(
@@ -126,14 +138,13 @@ export class WorkerFactory implements OnModuleDestroy {
   }
 
   /** Moves the job back to the delayed set. BullMQ does not count a `DelayedError` as an attempt. */
-  private async delay(queue: QueueName, job: Job, error: RetryLaterError): Promise<never> {
+  private async delay(job: Job, error: RetryLaterError): Promise<DelayedError> {
     await job.moveToDelayed(Date.now() + error.delayMs, job.token);
-    this.metrics.jobsTotal.inc({ queue, result: 'delayed' });
     this.logger.debug(
       { job_name: job.name, delay_ms: error.delayMs, reason: error.reason },
       'job delayed',
     );
-    throw new DelayedError();
+    return new DelayedError();
   }
 
   private async onFailed<N extends QueueName>(

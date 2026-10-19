@@ -102,6 +102,17 @@ export const EnvSchema = z.object({
   WORKER_CONCURRENCY_WEBHOOKS: positiveInt.max(200).default(10),
   WORKER_CONCURRENCY_TIMERS: positiveInt.max(200).default(5),
   WORKER_CONCURRENCY_MAINTENANCE: positiveInt.max(10).default(1),
+
+  /** Size (burst) of the send token bucket of each instance. The rate is `instances.rateLimitPerMinute`. */
+  OUTBOUND_BUCKET_BURST: positiveInt.max(60).default(3),
+  /** Warm-up of a new number: the days from the first connection to the full send rate. `0` or `1` turns it off. */
+  OUTBOUND_WARMUP_DAYS: z.coerce.number().int().min(0).max(90).default(7),
+  /** Warm-up: the send rate on the first day, in percent of the full rate. The rate grows linearly. */
+  OUTBOUND_WARMUP_START_PERCENT: positiveInt.max(100).default(20),
+  /** Validity of the pre-signed upload URL of `POST /v1/media`. */
+  MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(900),
+  /** Validity of the pre-signed download URL that the provider gets for a media message. */
+  MEDIA_SEND_URL_TTL_SECONDS: positiveInt.max(86_400).default(900),
 });
 
 export type AppEnv = z.infer<typeof EnvSchema>;

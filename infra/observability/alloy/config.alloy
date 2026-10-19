@@ -1,0 +1,164 @@
+// Grafana Alloy of the Bot Center host (service `alloy` of infra/compose/compose.prod.yml).
+//
+// Logs:    the JSON log files of the Docker containers (no Docker socket) -> Grafana Cloud Loki.
+//          Labels: service (Compose service), stream, host, environment.
+// Metrics: the API (api:3000/metrics), the workers (worker:9464/metrics), the host (node exporter
+//          built in), and the text file metrics of the host scripts (backup, restore test)
+//          -> Grafana Cloud Prometheus (remote write).
+// Credentials: alloy.env (GRAFANA_CLOUD_*). No secret in this file.
+
+logging {
+	level  = "warn"
+	format = "json"
+}
+
+// ---------------------------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------------------------
+
+local.file_match "containers" {
+	path_targets = [{"__path__" = "/var/lib/docker/containers/*/*-json.log"}]
+	sync_period  = "15s"
+}
+
+loki.source.file "containers" {
+	targets       = local.file_match.containers.targets
+	forward_to    = [loki.process.containers.receiver]
+	tail_from_end = true
+}
+
+loki.process "containers" {
+	// One line of the json-file driver: {"log":"...","stream":"stdout","attrs":{...},"time":"..."}.
+	stage.json {
+		expressions = {
+			log     = "log",
+			stream  = "stream",
+			time    = "time",
+			service = "attrs.\"com.docker.compose.service\"",
+			project = "attrs.\"com.docker.compose.project\"",
+		}
+	}
+
+	// Keep only the containers of the Bot Center Compose project.
+	stage.drop {
+		source              = "project"
+		expression          = "^$"
+		drop_counter_reason = "not_compose"
+	}
+
+	stage.labels {
+		values = {
+			service = "",
+			stream  = "",
+		}
+	}
+
+	stage.timestamp {
+		source = "time"
+		format = "RFC3339Nano"
+	}
+
+	stage.output {
+		source = "log"
+	}
+
+	// The Evolution API can write phone numbers in its error lines. Mask them as 5511*****4321.
+	stage.match {
+		selector = "{service=\"evolution\"}"
+
+		stage.replace {
+			expression = "\\b\\d{4}(\\d{3,9})\\d{4}\\b"
+			replace    = "*****"
+		}
+	}
+
+	stage.static_labels {
+		values = {
+			host        = sys.env("BOTCENTER_HOST_NAME"),
+			environment = sys.env("BOTCENTER_ENVIRONMENT"),
+		}
+	}
+
+	forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+loki.write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_LOKI_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_LOKI_USER")
+			password = sys.env("GRAFANA_CLOUD_API_TOKEN")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Metrics
+// ---------------------------------------------------------------------------------------------
+
+prometheus.scrape "botcenter_api" {
+	job_name        = "botcenter-api"
+	targets         = [{"__address__" = "api:3000", "service" = "api"}]
+	metrics_path    = "/metrics"
+	scrape_interval = "15s"
+	forward_to      = [prometheus.relabel.common.receiver]
+}
+
+prometheus.scrape "botcenter_worker" {
+	job_name        = "botcenter-worker"
+	targets         = [{"__address__" = "worker:9464", "service" = "worker"}]
+	metrics_path    = "/metrics"
+	scrape_interval = "15s"
+	forward_to      = [prometheus.relabel.common.receiver]
+}
+
+// Host CPU, memory, disk, and the text files of the host scripts (/var/lib/botcenter/metrics).
+prometheus.exporter.unix "host" {
+	procfs_path = "/host/proc"
+	sysfs_path  = "/host/sys"
+	rootfs_path = "/host/root"
+
+	set_collectors = ["cpu", "diskstats", "filesystem", "loadavg", "meminfo", "netdev", "pressure", "stat", "textfile", "time", "uname", "vmstat"]
+
+	filesystem {
+		fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$"
+		mount_points_exclude = "^/(dev|proc|run|sys|var/lib/docker/.+)($|/)"
+	}
+
+	textfile {
+		directory = "/host/textfile"
+	}
+}
+
+prometheus.scrape "host" {
+	job_name        = "host"
+	targets         = prometheus.exporter.unix.host.targets
+	scrape_interval = "30s"
+	forward_to      = [prometheus.relabel.common.receiver]
+}
+
+prometheus.relabel "common" {
+	rule {
+		target_label = "host"
+		replacement  = sys.env("BOTCENTER_HOST_NAME")
+	}
+
+	rule {
+		target_label = "environment"
+		replacement  = sys.env("BOTCENTER_ENVIRONMENT")
+	}
+
+	forward_to = [prometheus.remote_write.grafana_cloud.receiver]
+}
+
+prometheus.remote_write "grafana_cloud" {
+	endpoint {
+		url = sys.env("GRAFANA_CLOUD_PROM_URL")
+
+		basic_auth {
+			username = sys.env("GRAFANA_CLOUD_PROM_USER")
+			password = sys.env("GRAFANA_CLOUD_API_TOKEN")
+		}
+	}
+}

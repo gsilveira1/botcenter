@@ -35,7 +35,7 @@ export class MetricsService {
   readonly webhookDeliveriesTotal: Counter<'result'>;
   /** Requests or sends refused by a rate limit (`scope`: `key` or `instance`). */
   readonly rateLimitDeniedTotal: Counter<'scope'>;
-  /** Jobs that ended, by queue and result (`completed`, `failed`, `delayed` for `RetryLaterError`). */
+  /** Job runs by queue and result (`completed`, `failed`, `delayed`: moved back to wait, not an attempt; also `RetryLaterError`). */
   readonly jobsTotal: Counter<'queue' | 'result'>;
   readonly jobDuration: Histogram<'queue'>;
   /** Events of the provider webhook (`enqueued`, `duplicate`, `ignored`, `rejected`, `unhandled`). */
