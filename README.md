@@ -57,8 +57,10 @@ Local stack for development (`127.0.0.1` only):
 
 ```sh
 docker compose -f infra/compose/compose.dev.yml up -d
+pnpm build
 pnpm db:migrate
-pnpm --filter @botcenter/api dev
+pnpm --filter @botcenter/api start          # the API (ROLE=api)
+pnpm --filter @botcenter/api start:worker   # the workers (ROLE=worker)
 ```
 
 Production: see `docs/runbook.md` (procedures "Prepare the host", "First deploy", and "Deploy a release").

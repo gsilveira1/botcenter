@@ -470,7 +470,7 @@ The Evolution API got `200` for these events, so it does not send them again. Ea
 
 1. Find the cause: `bc logs --since 1h worker | grep -i inbound`. Usual causes: PostgreSQL or Redis was not available for a long time, or a data error.
 2. Fix the cause. Make sure that `bc ps` shows `postgres`, `redis`, and `worker` healthy.
-3. Replay the failed jobs with the admin CLI: `bc exec api node dist/scripts/admin.js --help` shows the replay command of the release.
+3. Replay the events of the failed jobs with the admin CLI. The job data and the worker log show the raw event id: `bc exec api node dist/scripts/admin.js raw-events:replay --id <raw event id>`. The command queues the events again without the dedupe check. Then remove the failed jobs, or let the queue clean them.
 4. Make sure that the panel "Failed inbound jobs" goes back to 0. The alert then resolves.
 
 ### 17.8 Worker not ready (alert `WorkerNotReady`)
