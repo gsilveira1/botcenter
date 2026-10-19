@@ -1,0 +1,102 @@
+# Override of infra/compose/compose.prod.yml for the local smoke test (tests/smoke/run-smoke.sh).
+# Do not use it on a production host.
+#
+# Changes to the production stack, and the reasons:
+#   - Unique names: the project, the networks, and the volumes get the prefix SMOKE_PROJECT, so a smoke
+#     run does not touch a production stack or a second smoke run on the same machine.
+#   - Caddy publishes random high ports on 127.0.0.1 only (SMOKE_HTTP_PORT, SMOKE_HTTPS_PORT), not 80,
+#     443, and 3001. TLS uses `tls internal` (CADDY_TLS=internal): the local CA of Caddy.
+#   - MinIO replaces Cloudflare R2 (the S3 variables of the API are required).
+#   - `receiver` is a local HTTPS server (Caddy, `tls internal`) for the webhook step.
+# The services `alloy` and `uptime-kuma` do not start (they need Grafana Cloud and a UI).
+services:
+  caddy:
+    ports: !override
+      - '127.0.0.1:${SMOKE_HTTP_PORT:?}:80'
+      - '127.0.0.1:${SMOKE_HTTPS_PORT:?}:443'
+
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    command: ['server', '/data']
+    env_file:
+      - path: ${BOTCENTER_ENV_DIR:?}/minio.env
+    volumes:
+      - minio-data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  # Creates the private media bucket, then exits.
+  minio-init:
+    image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file:
+      - path: ${BOTCENTER_ENV_DIR:?}/minio.env
+    environment:
+      S3_BUCKET: botcenter-media
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$S3_BUCKET"
+        mc anonymous set none "local/$$S3_BUCKET"
+    networks:
+      - internal
+    restart: 'no'
+
+  # A local HTTPS webhook receiver. It is on `edge` (the API resolves the name at registration time)
+  # and on `egress` (the worker sends the deliveries from that network).
+  receiver:
+    image: caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af
+    command: ['caddy', 'run', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile']
+    volumes:
+      # An absolute path: Compose resolves a relative path from infra/compose (the first file).
+      - ${SMOKE_DIR:?}/receiver.Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      edge:
+        aliases:
+          - receiver.smoke.test
+      egress:
+        aliases:
+          - receiver.smoke.test
+
+  api:
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  worker:
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+networks:
+  edge:
+    name: ${SMOKE_PROJECT:?}-edge
+  internal:
+    name: ${SMOKE_PROJECT:?}-internal
+  egress:
+    name: ${SMOKE_PROJECT:?}-egress
+
+volumes:
+  postgres-data:
+    name: ${SMOKE_PROJECT:?}-postgres-data
+  redis-data:
+    name: ${SMOKE_PROJECT:?}-redis-data
+  evolution-instances:
+    name: ${SMOKE_PROJECT:?}-evolution-instances
+  caddy-data:
+    name: ${SMOKE_PROJECT:?}-caddy-data
+  uptime-kuma-data:
+    name: ${SMOKE_PROJECT:?}-uptime-kuma-data
+  alloy-data:
+    name: ${SMOKE_PROJECT:?}-alloy-data
+  minio-data:
+    name: ${SMOKE_PROJECT:?}-minio-data

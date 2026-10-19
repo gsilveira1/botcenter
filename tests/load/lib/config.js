@@ -71,6 +71,24 @@ export const SEND_REQUEST_NAME = 'POST /v1/messages';
 export const STATUS_REQUEST_NAME = 'GET /v1/messages/{id}';
 
 /**
+ * The instance of one request. `INSTANCE_IDS` (a comma list) spreads the messages over several
+ * instances, so the send rate limit of one instance (at most 600 per minute) does not cap the worker
+ * throughput. Without it, every message goes to `INSTANCE_ID`.
+ * @param {Record<string, string | undefined>} env
+ * @param {number} vu
+ * @param {number} iteration
+ * @returns {string}
+ */
+export function instanceFor(env, vu, iteration) {
+  const ids = (env.INSTANCE_IDS || '')
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id !== '');
+  if (ids.length === 0) return requireEnv(env, 'INSTANCE_ID');
+  return ids[(vu + iteration) % ids.length];
+}
+
+/**
  * A text message to a test number. The fake Evolution server accepts any number.
  * @param {Record<string, string | undefined>} env
  * @param {number} vu
@@ -78,7 +96,7 @@ export const STATUS_REQUEST_NAME = 'GET /v1/messages/{id}';
  */
 export function messagePayload(env, vu, iteration) {
   return {
-    instance_id: requireEnv(env, 'INSTANCE_ID'),
+    instance_id: instanceFor(env, vu, iteration),
     to: env.TO || '5511999990000',
     type: 'text',
     text: `Load test message ${vu}-${iteration}`,
