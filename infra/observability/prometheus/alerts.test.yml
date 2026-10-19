@@ -7,15 +7,24 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
-  - name: an instance disconnected for more than 2 minutes fires, a short drop does not
+  # ARCH-15: the API exports the incidents (connecting or disconnected after a connection, older than
+  # 2 minutes). Evolution reports a lost connection as `connecting`, so the status gauge is not enough.
+  - name: a recent instance incident fires at once, a stale incident (24 h or more) is info only
     interval: 1m
     input_series:
-      - series: 'botcenter_instances{status="disconnected", host="h1"}'
-        values: '0 1 1 1 1 1'
-      - series: 'botcenter_instances{status="disconnected", host="h2"}'
-        values: '0 1 0 0 0 0'
+      - series: 'botcenter_instance_incidents{age="recent", host="h1", role="api"}'
+        values: '0 0 1 1 1 1'
+      - series: 'botcenter_instance_incidents{age="stale", host="h1", role="api"}'
+        values: '0x5'
+      - series: 'botcenter_instance_incidents{age="recent", host="h2", role="api"}'
+        values: '0x5'
+      - series: 'botcenter_instance_incidents{age="stale", host="h2", role="api"}'
+        values: '2x70'
+      # The status gauge alone must not fire (a parked number stays `disconnected` for ever).
+      - series: 'botcenter_instances{status="disconnected", host="h2", role="api"}'
+        values: '2x70'
     alert_rule_test:
-      - eval_time: 2m
+      - eval_time: 1m
         alertname: InstanceDisconnected
         exp_alerts: []
       - eval_time: 4m
@@ -27,6 +36,15 @@ tests:
             exp_annotations:
               summary: '1 WhatsApp instance(s) disconnected for more than 2 minutes on h1'
               description: 'The bots of these numbers do not send or receive. Runbook: "Incident: instance disconnected".'
+      - eval_time: 70m
+        alertname: InstanceDisconnectedLong
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              host: h2
+            exp_annotations:
+              summary: '2 WhatsApp instance(s) disconnected for more than 24 hours on h2'
+              description: 'The owner did not connect these numbers again. Tell the tenant, or delete the instances. Runbook: "Incident: instance disconnected".'
 
   - name: the outbound queue delay above 30 s fires after 1 minute
     interval: 1m

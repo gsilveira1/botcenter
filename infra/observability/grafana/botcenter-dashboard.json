@@ -127,13 +127,13 @@
     },
     {
       "type": "stat",
-      "title": "Disconnected instances",
+      "title": "Disconnected instances (more than 2 min)",
       "id": 3,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "",
+      "description": "botcenter_instance_incidents{age=\"recent\"}: instances that were connected and are connecting or disconnected for 2 minutes to 24 hours (alert InstanceDisconnected).",
       "gridPos": {
         "h": 4,
         "w": 6,
@@ -176,7 +176,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(botcenter_instances{status=~\"disconnected|logged_out\",host=~\"$host\"}) or vector(0)"
+          "expr": "max(botcenter_instance_incidents{age=\"recent\",host=~\"$host\"}) or vector(0)"
         }
       ]
     },

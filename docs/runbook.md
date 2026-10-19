@@ -395,15 +395,15 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 
 ## 17. Incident procedures
 
-### 17.1 Instance disconnected (alert `InstanceDisconnected`)
+### 17.1 Instance disconnected (alerts `InstanceDisconnected`, `InstanceDisconnectedLong`)
 
-1. Find the instances: `bc exec postgres psql -U postgres -d botcenter -c "SELECT id, \"externalRef\", status, \"updatedAt\" FROM instances WHERE status IN ('disconnected','logged_out') AND \"deletedAt\" IS NULL"`.
+1. Find the instances: `bc exec postgres psql -U postgres -d botcenter -c "SELECT id, \"externalRef\", status, \"disconnectedSince\" FROM instances WHERE status IN ('connecting','disconnected') AND \"disconnectedSince\" IS NOT NULL AND \"deletedAt\" IS NULL"`. The alert counts the instances that were connected and are `connecting` or `disconnected` for more than 2 minutes (metric `botcenter_instance_incidents`).
 2. Read the Evolution log of the period: `bc logs --since 30m evolution`. Look for `connection.update` with a status code.
 3. If all instances are disconnected, the cause is the Evolution API or the network:
    - Check the outbound internet access of the Evolution API: `bc exec evolution node -e "fetch('https://web.whatsapp.com').then((r) => console.log(r.status))"`.
    - Restart the Evolution API: `bc restart evolution`. The sessions are in the database, so the instances reconnect.
    - If the instances do not reconnect after a restart, a WhatsApp change can be the cause. Read the issues of the Evolution repository. Do not delete instances.
-4. If one instance is disconnected, `disconnected` reconnects on its own. If it stays disconnected for more than 10 minutes, tell the tenant. The owner must start a new connect flow when the status is `logged_out`.
+4. If one instance is disconnected, `disconnected` reconnects on its own. If it stays disconnected for more than 10 minutes, tell the tenant. The owner must start a new connect flow when the status is `logged_out`. After 24 hours, the incident moves to `age="stale"`: the critical alert resolves and the info alert `InstanceDisconnectedLong` starts. Tell the tenant to connect the number again or to delete the instance.
 
 ### 17.2 Queue backlog (alerts `OutboundQueueDelayHigh`, `QueueDelayHigh`)
 
@@ -463,6 +463,7 @@ The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard 
 | Metric | Type | Labels |
 | --- | --- | --- |
 | `botcenter_instances` | gauge | `status` |
+| `botcenter_instance_incidents` | gauge | `age` (`recent`: 2 minutes to 24 hours; `stale`: 24 hours or more) |
 | `botcenter_queue_delay_seconds` | gauge | `queue` |
 | `botcenter_queue_size` | gauge | `queue`, `state` |
 | `botcenter_messages_total` | counter | `status` |

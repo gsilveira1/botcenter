@@ -5,6 +5,7 @@
 #
 # Metrics of the application (the API agent exposes them; see docs/runbook.md, "Metrics"):
 #   botcenter_instances{status}                 gauge: instances per status
+#   botcenter_instance_incidents{age}           gauge: instances disconnected for more than 2 min (recent, stale)
 #   botcenter_queue_delay_seconds{queue}        gauge: age of the oldest waiting job of a queue
 #   botcenter_queue_size{queue,state}           gauge: jobs per queue and state
 #   botcenter_messages_total{status}            counter: outbound messages per status
@@ -18,14 +19,26 @@
 groups:
   - name: botcenter-whatsapp
     rules:
+      # ARCH-15: the API counts the incidents (status `connecting` or `disconnected` after a connection,
+      # for more than 2 minutes), as the connection monitor does. Evolution reports a lost connection as
+      # `connecting`. A number that stays disconnected for 24 hours moves to `age="stale"` (info only).
       - alert: InstanceDisconnected
-        expr: sum by (host) (botcenter_instances{status="disconnected"}) > 0
-        for: 2m
+        expr: max by (host) (botcenter_instance_incidents{age="recent"}) > 0
+        for: 1m
         labels:
           severity: critical
         annotations:
           summary: '{{ $value }} WhatsApp instance(s) disconnected for more than 2 minutes on {{ $labels.host }}'
           description: 'The bots of these numbers do not send or receive. Runbook: "Incident: instance disconnected".'
+
+      - alert: InstanceDisconnectedLong
+        expr: max by (host) (botcenter_instance_incidents{age="stale"}) > 0
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: '{{ $value }} WhatsApp instance(s) disconnected for more than 24 hours on {{ $labels.host }}'
+          description: 'The owner did not connect these numbers again. Tell the tenant, or delete the instances. Runbook: "Incident: instance disconnected".'
 
       - alert: InstanceLoggedOut
         expr: sum by (host) (botcenter_instances{status="logged_out"}) > 0

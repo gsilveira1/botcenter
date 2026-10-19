@@ -59,6 +59,7 @@ describe('alerts.yml', () => {
   it('uses only the agreed application metric names', () => {
     const agreed = new Set([
       'botcenter_instances',
+      'botcenter_instance_incidents',
       'botcenter_queue_delay_seconds',
       'botcenter_queue_size',
       'botcenter_messages_total',
