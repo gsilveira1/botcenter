@@ -75,6 +75,8 @@ services:
       - '127.0.0.1:3001:3001'
     volumes:
       - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # SEC-14: the CA of Cloudflare Authenticated Origin Pulls (the client certificate of Cloudflare).
+      - ../caddy/cloudflare-origin-pull-ca.pem:/etc/caddy/cloudflare-origin-pull-ca.pem:ro
       # The Cloudflare ranges for `trusted_proxies`. infra/host/firewall-cloudflare.sh keeps the host copy current.
       - ${CADDY_CLOUDFLARE_IPS_FILE:-../caddy/cloudflare-ips.caddy}:/etc/caddy/cloudflare-ips.caddy:ro
       # Cloudflare origin certificate (TLS mode `origin`). An empty directory is valid in the ACME mode.

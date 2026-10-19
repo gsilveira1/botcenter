@@ -86,7 +86,9 @@ The script is idempotent. Run it again after a change of `infra/host/bootstrap.s
 
    Caddy runs as uid 1000 and must read the two files through the bind mount of `/etc/botcenter/certs`. The directory stays closed for a listing. `/etc/botcenter` stays mode 700.
 6. Security > WAF: turn on the Cloudflare managed rules that the Free plan has. Add a rate limiting rule for the API host name (for example, 600 requests per minute for each IP). The API also has its own limits.
-7. Optional: SSL/TLS > Origin Server > "Authenticated Origin Pulls". Then add `client_auth` with the Cloudflare CA to the Caddyfile. This makes sure that only Cloudflare can connect, also from a Cloudflare IP of an other customer.
+7. Required (SEC-14): SSL/TLS > Origin Server > turn on "Authenticated Origin Pulls" (zone level). Cloudflare then sends its client certificate to the origin. The Caddyfile requires a client certificate of the Cloudflare origin pull CA (`infra/caddy/cloudflare-origin-pull-ca.pem`, valid to 2029-11-01). Only Cloudflare with this setting can connect, not a client of another Cloudflare account from a Cloudflare IP.
+
+   CAUTION: Turn on the setting before the first deploy. Without it, every request through Cloudflare gets a TLS error (Cloudflare shows error 525 or 526). A direct request to the origin IP also fails, by design.
 
 ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `caddy.env` and `ALLOW_HTTP=true` in `firewall.env`. Let's Encrypt then uses HTTP-01 through Cloudflare on port 80. The origin certificate is simpler and needs no open port 80.
 

@@ -21,6 +21,18 @@ describe('Caddyfile', () => {
     expect(caddyfile).toContain('flush_interval -1');
   });
 
+  it('requires the client certificate of Cloudflare Authenticated Origin Pulls (SEC-14)', () => {
+    expect(caddyfile).toMatch(
+      /tls \{\$CADDY_TLS\} \{\n\t\tclient_auth \{\n\t\t\tmode require_and_verify\n\t\t\ttrust_pool file \/etc\/caddy\/cloudflare-origin-pull-ca\.pem\n/,
+    );
+    const ca = readRepoFile('infra/caddy/cloudflare-origin-pull-ca.pem');
+    expect(ca).toContain('-----BEGIN CERTIFICATE-----');
+    const compose = readRepoFile('infra/compose/compose.prod.yml');
+    expect(compose).toContain(
+      '../caddy/cloudflare-origin-pull-ca.pem:/etc/caddy/cloudflare-origin-pull-ca.pem:ro',
+    );
+  });
+
   it('takes the client IP from CF-Connecting-IP of the Cloudflare ranges only', () => {
     expect(caddyfile).toContain('import /etc/caddy/cloudflare-ips.caddy');
     expect(caddyfile).toContain('client_ip_headers CF-Connecting-IP');
