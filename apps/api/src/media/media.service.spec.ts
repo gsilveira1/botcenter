@@ -15,10 +15,15 @@ const ROW = {
 function setup(
   row: typeof ROW | null = ROW,
   stored: { sizeBytes: number } | null = { sizeBytes: 10 },
+  liveBytes = 0,
 ) {
   const mediaObject = {
     findFirst: vi.fn(async () => row),
     create: vi.fn(async () => ({ id: 'media-1' })),
+    aggregate: vi.fn(async () => ({ _sum: { sizeBytes: liveBytes } })),
+  };
+  const quotas = {
+    consume: vi.fn(async () => ({ allowed: true, limit: 1000, retryAfterSeconds: 10 })),
   };
   const prisma = { forTenant: vi.fn(() => ({ mediaObject })) };
   const storage = {
@@ -39,10 +44,11 @@ function setup(
     prisma as never,
     storage as never,
     tenants as never,
-    testEnv(),
+    testEnv({ MEDIA_MAX_BYTES_PER_TENANT: '100' }),
     guard as never,
+    quotas as never,
   );
-  return { service, mediaObject, storage, guard };
+  return { service, mediaObject, storage, guard, quotas };
 }
 
 describe('MediaService', () => {
@@ -132,6 +138,37 @@ describe('MediaService', () => {
       .catch((caught: unknown) => caught);
     expect((error as AppError).code).toBe('VALIDATION_FAILED');
     expect(s.mediaObject.create).not.toHaveBeenCalled();
+  });
+
+  it('limits the uploads of a tenant: live bytes, uploads for each day, a short URL (SEC-17)', async () => {
+    const request = { content_type: 'image/png', size_bytes: 30, file_name: 'a.png' };
+    const full = setup(ROW, { sizeBytes: 10 }, 80);
+    const tooLarge = await full.service
+      .createUpload('t-1', request)
+      .catch((caught: unknown) => caught);
+    expect((tooLarge as AppError).code).toBe('QUOTA_EXCEEDED');
+    expect(full.mediaObject.create).not.toHaveBeenCalled();
+
+    const daily = setup();
+    daily.quotas.consume.mockResolvedValueOnce({
+      allowed: false,
+      limit: 1000,
+      retryAfterSeconds: 3600,
+    });
+    const refused = await daily.service
+      .createUpload('t-1', request)
+      .catch((caught: unknown) => caught);
+    expect((refused as AppError).code).toBe('QUOTA_EXCEEDED');
+    expect((refused as AppError).headers['Retry-After']).toBe('3600');
+    expect(daily.quotas.consume).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'media-uploads-per-day', subject: 't-1', limit: 1000 }),
+    );
+
+    const ok = setup(ROW, { sizeBytes: 10 }, 70);
+    const now = new Date('2026-10-19T10:00:00Z');
+    const created = await ok.service.createUpload('t-1', request, now);
+    expect(created.expires_at).toBe('2026-10-19T10:05:00.000Z');
+    expect(ok.storage.uploadUrl).toHaveBeenCalledWith(expect.any(String), 'image/png', 30, 300);
   });
 
   it('makes object keys without the file name', () => {

@@ -26,7 +26,9 @@ export class MediaController {
     summary: 'Get a pre-signed upload URL for a media file',
     description:
       'Send the bytes with `PUT upload_url`, the same `Content-Type`, and exactly `size_bytes` bytes ' +
-      'before `expires_at`. Then use `media_id` in `POST /v1/messages`. The bucket is private. ' +
+      'before `expires_at` (5 minutes). Then use `media_id` in `POST /v1/messages`. The bucket is private. ' +
+      'A tenant has at most `MEDIA_UPLOADS_PER_DAY` uploads for each UTC day and ' +
+      '`MEDIA_MAX_BYTES_PER_TENANT` bytes of live files; above them, 429 `QUOTA_EXCEEDED`. ' +
       `Accepted types (${ACCEPTED_TYPES}). A \`document\` message accepts every type of the list.`,
   })
   @ApiResponse(201, { description: 'Upload URL', schema: CreateMediaUploadResponseDto })

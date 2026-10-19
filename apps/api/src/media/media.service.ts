@@ -11,12 +11,15 @@ import { ENV } from '../config/env';
 import type { AppEnv } from '../config/env';
 import { SsrfGuard } from '../external-http/ssrf-guard';
 import { ExternalHttpError } from '../ports/external-http.port';
+import { getLogger } from '../logging/logger';
 import { PrismaService } from '../prisma/prisma.service';
+import { QuotaService } from '../rate-limit/quota.service';
 import { TenantsService } from '../services/tenants.service';
 import { fitsMediaType, isAcceptedContentType } from './media-types';
 import { MediaStorage } from './media.storage';
 
 const DAY_MS = 86_400_000;
+export const MEDIA_UPLOADS_QUOTA = 'media-uploads-per-day';
 
 /** Why the worker cannot send a media message. The value is the `failure_reason` of the message. */
 export type MediaFailureReason =
@@ -67,7 +70,10 @@ export class MediaService {
     private readonly tenants: TenantsService,
     @Inject(ENV) private readonly env: AppEnv,
     private readonly guard: SsrfGuard,
+    private readonly quotas: QuotaService,
   ) {}
+
+  private readonly logger = getLogger('media');
 
   async createUpload(
     tenantId: string,
@@ -79,6 +85,8 @@ export class MediaService {
         { path: 'content_type', message: 'WhatsApp does not accept this content type' },
       ]);
     }
+    await this.assertStorageQuota(tenantId, request.size_bytes, now);
+    await this.consumeDailyUpload(tenantId, now);
     const tenant = await this.tenants.get(tenantId);
     const key = outboundMediaKey(tenantId);
     const row = await this.prisma.forTenant(tenantId).mediaObject.create({
@@ -163,6 +171,55 @@ export class MediaService {
       mime_type: media.contentType,
       ...(fileName ? { file_name: fileName } : {}),
     };
+  }
+
+  /**
+   * SEC-17: 429 `QUOTA_EXCEEDED` when the declared sizes of the live outbound media of the tenant and
+   * the new file are above `MEDIA_MAX_BYTES_PER_TENANT`.
+   */
+  private async assertStorageQuota(tenantId: string, sizeBytes: number, now: Date): Promise<void> {
+    const live = await this.prisma.forTenant(tenantId).mediaObject.aggregate({
+      where: { direction: 'outbound', OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
+      _sum: { sizeBytes: true },
+    });
+    const used = live._sum.sizeBytes ?? 0;
+    if (used + sizeBytes > this.env.MEDIA_MAX_BYTES_PER_TENANT) {
+      throw new AppError(
+        'QUOTA_EXCEEDED',
+        `The media storage of the tenant is full (${this.env.MEDIA_MAX_BYTES_PER_TENANT} bytes). ` +
+          'Space is free again when old files expire.',
+      );
+    }
+  }
+
+  /**
+   * SEC-17: 429 `QUOTA_EXCEEDED` with `Retry-After` above `MEDIA_UPLOADS_PER_DAY` (UTC day). When Redis
+   * fails, the upload continues (fail open) with an error log, like the daily message quota.
+   */
+  private async consumeDailyUpload(tenantId: string, now: Date): Promise<void> {
+    let result;
+    try {
+      result = await this.quotas.consume({
+        name: MEDIA_UPLOADS_QUOTA,
+        subject: tenantId,
+        window: 'day',
+        limit: this.env.MEDIA_UPLOADS_PER_DAY,
+        now,
+      });
+    } catch (error) {
+      this.logger.error(
+        { err: error },
+        'daily media upload quota check failed; the upload continues',
+      );
+      return;
+    }
+    if (!result.allowed) {
+      throw new AppError(
+        'QUOTA_EXCEEDED',
+        `The daily quota of ${result.limit} media uploads is used. It resets at 00:00 UTC.`,
+        { headers: { 'Retry-After': String(result.retryAfterSeconds) } },
+      );
+    }
   }
 
   private async assertUrlAllowed(url: string): Promise<void> {
