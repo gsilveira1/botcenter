@@ -183,6 +183,9 @@ model Instance {
   /// Host that runs the session (phase 3 routing). Phase 1 has one host.
   host               String         @default("primary")
   rateLimitPerMinute Int
+  /// Time of the first `connected` status. A trigger sets it (migration `20261019110001_messages_instance_first_connected`).
+  /// The outbound rate limit uses it for the warm-up of a new number.
+  firstConnectedAt   DateTime?      @db.Timestamptz(3)
   botId              String?        @db.Uuid
   deletedAt          DateTime?      @db.Timestamptz(3)
   createdAt          DateTime       @default(now()) @db.Timestamptz(3)
@@ -326,6 +329,8 @@ model Message {
   /// Message id in WhatsApp, known after the send or on receipt.
   providerMessageId String?
   priority          MessagePriority  @default(bulk)
+  /// Outbound only: the provider shows "typing" for this time before the send (bot replies).
+  typingDelayMs     Int?
   failureReason     String?
   sentAt            DateTime?        @db.Timestamptz(3)
   deliveredAt       DateTime?        @db.Timestamptz(3)

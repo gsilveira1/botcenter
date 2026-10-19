@@ -9,4 +9,6 @@ export const redisKeys = {
   quota: (name: string, subject: string, window: string) => `bc:quota:${name}:${subject}:${window}`,
   lock: (name: string) => `bc:lock:${name}`,
   inboundDedupe: (dedupeKey: string) => `bc:dedupe:inbound:${dedupeKey}`,
+  /** Send token bucket of an instance (messages slice, Lua script). */
+  outboundBucket: (instanceId: string) => `bc:bucket:instance:${instanceId}`,
 } as const;
