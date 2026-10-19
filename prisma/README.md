@@ -64,6 +64,10 @@ Wave 2 slices add migrations. Do not edit a migration that is on `develop`.
 The first migration (`20261019000000_init`) has a hand-written block after the generated SQL:
 the function `audit_logs_refuse_change` and two triggers. They refuse `UPDATE`, `DELETE`, and `TRUNCATE` on `audit_logs`.
 
+The migration `20261019110001_messages_instance_first_connected` has the function `instances_set_first_connected_at` and the trigger `instances_first_connected_at`.
+The first change of `instances.status` to `connected` sets `firstConnectedAt`. A later change does not move it.
+The outbound rate limit uses the column for the warm-up of a new number.
+
 ## Preview feature
 
 The schema uses the preview feature `partialIndexes`, so that `schema.prisma` declares the two partial indexes:
