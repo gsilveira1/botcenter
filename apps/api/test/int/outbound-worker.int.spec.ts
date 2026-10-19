@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { TestingModule } from '@nestjs/testing';
 import { ProviderError } from '@botcenter/whatsapp-provider';
+import type { Job } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Instance, Tenant } from '../../src/generated/prisma/client';
 import { inboundJobId } from '../../src/inbound/inbound-ingest.service';
@@ -77,6 +78,23 @@ async function statusEvents(messageId: string) {
   return rows
     .map((row) => row.payload as { message_id: string; status: string; failure_reason: string })
     .filter((payload) => payload.message_id === messageId);
+}
+
+/**
+ * Moves a delayed job to the wait list at once (the test skips the backoff). The job can leave the
+ * delayed state at the same time; then there is nothing to do.
+ */
+async function skipDelay(job: Job | undefined): Promise<void> {
+  if ((await job?.getState()) !== 'delayed') {
+    return;
+  }
+  try {
+    await job?.promote();
+  } catch (error) {
+    if (!(error as Error).message.includes('is not in the delayed state')) {
+      throw error;
+    }
+  }
 }
 
 function outboundJob(id: string) {
@@ -173,10 +191,7 @@ describe('outbound worker (in-memory provider)', () => {
     const id = await send(f);
     // Skip the backoff waits: promote each delayed retry at once.
     await waitFor(async () => {
-      const job = await outboundJob(id);
-      if ((await job?.getState()) === 'delayed') {
-        await job?.promote();
-      }
+      await skipDelay(await outboundJob(id));
       return (await message(id)).status === 'failed';
     }, 30_000);
     const failed = await message(id);
@@ -238,9 +253,7 @@ describe('outbound worker (in-memory provider)', () => {
     const queue = h.get(QueuesService).get('inbound');
     await waitFor(async () => {
       const job = await queue.getJob(inboundJobId(webhook.dedupeKey));
-      if ((await job?.getState()) === 'delayed') {
-        await job?.promote();
-      }
+      await skipDelay(job);
       return (await job?.getState()) === 'completed';
     }, 20_000);
   });
