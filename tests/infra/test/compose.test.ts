@@ -280,6 +280,20 @@ describe('compose.prod.yml', () => {
     expect(command).toContain('--maxmemory-policy noeviction');
     expect(command).toContain('--requirepass');
   });
+
+  it('gives Evolution and Bot Center separate Redis users (SEC-11)', () => {
+    const command = JSON.stringify(prod.services.redis!.command);
+    expect(command).toContain(
+      "--user botcenter on \\\">$$REDIS_BOTCENTER_PASSWORD\\\" '~bc:*' '~bull:*'",
+    );
+    expect(command).toContain(
+      "--user evolution on \\\">$$REDIS_EVOLUTION_PASSWORD\\\" '~evolution:*' resetchannels '-@all'",
+    );
+    expect(command).toContain(
+      '--user metrics on \\">$$REDIS_METRICS_PASSWORD\\" resetchannels \'-@all\'',
+    );
+    expect(JSON.stringify(cx22.services.redis ?? {})).not.toContain('command');
+  });
 });
 
 describe('compose.dev.yml', () => {

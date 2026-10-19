@@ -995,7 +995,7 @@
       "description": "",
       "gridPos": {
         "h": 8,
-        "w": 8,
+        "w": 6,
         "x": 0,
         "y": 57
       },
@@ -1057,8 +1057,8 @@
       "description": "",
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 6,
         "y": 57
       },
       "fieldConfig": {
@@ -1119,8 +1119,8 @@
       "description": "",
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 12,
         "y": 57
       },
       "fieldConfig": {
@@ -1167,6 +1167,68 @@
           },
           "expr": "1 - botcenter_host_filesystem_avail_bytes{mountpoint=\"/\",host=~\"$host\"} / botcenter_host_filesystem_size_bytes{mountpoint=\"/\",host=~\"$host\"}",
           "legendFormat": "/"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Redis memory (of maxmemory)",
+      "id": 25,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "redis_memory_used_bytes / redis_memory_max_bytes (Redis exporter of Alloy). Redis is shared with the Evolution API; at 100 % it refuses writes (noeviction).",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 57
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.8
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(redis_memory_used_bytes{host=~\"$host\"} / redis_memory_max_bytes{host=~\"$host\"})",
+          "legendFormat": "used / maxmemory"
         }
       ]
     }

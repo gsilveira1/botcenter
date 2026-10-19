@@ -3,8 +3,9 @@
 // Logs:    the journal of the host (journald log driver of the containers; SEC-07: no Docker data
 //          directory, no Docker socket) -> Grafana Cloud Loki.
 //          Labels: service (Compose service), stream, host, environment.
-// Metrics: the API (api:9465/metrics), the workers (worker:9464/metrics), the host (node exporter
-//          built in), and the text file metrics of the host scripts (backup, restore test)
+// Metrics: the API (api:9465/metrics), the workers (worker:9464/metrics), Redis (exporter built in,
+//          user `metrics`), the host (node exporter built in), and the text file metrics of the host
+//          scripts (backup, restore test, disk usage)
 //          -> Grafana Cloud Prometheus (remote write).
 // Credentials: alloy.env (GRAFANA_CLOUD_*). No secret in this file.
 
@@ -122,6 +123,22 @@ prometheus.exporter.unix "host" {
 prometheus.scrape "host" {
 	job_name        = "host"
 	targets         = prometheus.exporter.unix.host.targets
+	scrape_interval = "30s"
+	forward_to      = [prometheus.relabel.common.receiver]
+}
+
+// Redis is shared with the Evolution API, and a full Redis refuses writes (noeviction). The ACL user
+// `metrics` can run INFO only (SEC-11), so CONFIG is off: maxmemory comes from INFO.
+prometheus.exporter.redis "redis" {
+	redis_addr     = "redis:6379"
+	redis_user     = "metrics"
+	redis_password = sys.env("REDIS_METRICS_PASSWORD")
+	config_command = ""
+}
+
+prometheus.scrape "redis" {
+	job_name        = "redis"
+	targets         = prometheus.exporter.redis.redis.targets
 	scrape_interval = "30s"
 	forward_to      = [prometheus.relabel.common.receiver]
 }

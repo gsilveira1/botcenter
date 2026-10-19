@@ -278,26 +278,44 @@ services:
     read_only: true
     env_file:
       - path: ${BOTCENTER_ENV_DIR:-/etc/botcenter}/redis.env
+    environment:
+      # Below the container limit, so the AOF rewrite (fork) has space. compose.prod.cx22.yml sets 160mb.
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-384mb}
     # AOF everysec: at most 1 s of queue writes is lost on a crash.
     # noeviction: BullMQ must never lose a key. A full Redis refuses writes, and the API reports the error.
-    # maxmemory stays below the container limit, so the AOF rewrite (fork) has space.
+    # SEC-11: one ACL user for each client. The passwords come from redis.env (Redis replaces its process
+    # title, so /proc/<pid>/cmdline does not show them; tests/infra checks this).
+    #   default    the operators and the health check (REDIS_PASSWORD)
+    #   botcenter  API and workers: `bc:*` keys and channels, BullMQ `bull:*`, no dangerous command
+    #   evolution  the cache of the Evolution API: `evolution:*` keys, its cache commands, no channel
+    #   metrics    the Redis exporter of Alloy: INFO only
     command:
       - sh
       - -c
       - >-
+        : "$${REDIS_BOTCENTER_PASSWORD:?is missing in redis.env}"
+        "$${REDIS_EVOLUTION_PASSWORD:?is missing in redis.env}"
+        "$${REDIS_METRICS_PASSWORD:?is missing in redis.env}" &&
         exec redis-server
         --appendonly yes
         --appendfsync everysec
         --save ''
-        --maxmemory ${REDIS_MAXMEMORY:-384mb}
+        --maxmemory "$$REDIS_MAXMEMORY"
         --maxmemory-policy noeviction
         --requirepass "$$REDIS_PASSWORD"
+        --user botcenter on ">$$REDIS_BOTCENTER_PASSWORD" '~bc:*' '~bull:*' '&bc:*' '+@all' '-@dangerous' '+info'
+        --user evolution on ">$$REDIS_EVOLUTION_PASSWORD" '~evolution:*' resetchannels '-@all' '+@connection' '-@dangerous'
+        '+select' '+get' '+set' '+setex' '+exists' '+del' '+unlink' '+expire' '+ttl' '+type'
+        '+hget' '+hset' '+hdel' '+hgetall' '+scan'
+        --user metrics on ">$$REDIS_METRICS_PASSWORD" resetchannels '-@all' '+@connection' '-@dangerous' '+info'
     volumes:
       - redis-data:/data
     stop_grace_period: 30s
     networks:
       internal:
         ipv4_address: 10.203.1.11
+      # The Redis exporter of Alloy (user `metrics`, INFO only).
+      metrics: {}
     healthcheck:
       test: ['CMD-SHELL', 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
       interval: 10s

@@ -41,8 +41,20 @@ describe('gen-secrets.sh', () => {
     const env = (name: string) => readEnvFile(readFileSync(path.join(target, name), 'utf8'));
     const redis = env('redis.env').get('REDIS_PASSWORD')!;
     expect(redis).toMatch(/^[0-9a-f]{64}$/);
-    expect(env('api.env').get('REDIS_URL')).toBe(`redis://:${redis}@redis:6379/0`);
-    expect(env('evolution.env').get('CACHE_REDIS_URI')).toBe(`redis://:${redis}@redis:6379/1`);
+    // SEC-11: one Redis user for each client; the admin password stays in redis.env.
+    const botcenter = env('redis.env').get('REDIS_BOTCENTER_PASSWORD')!;
+    const evolution = env('redis.env').get('REDIS_EVOLUTION_PASSWORD')!;
+    expect(new Set([redis, botcenter, evolution]).size).toBe(3);
+    expect(env('api.env').get('REDIS_URL')).toBe(`redis://botcenter:${botcenter}@redis:6379/0`);
+    expect(env('evolution.env').get('CACHE_REDIS_URI')).toBe(
+      `redis://evolution:${evolution}@redis:6379/1`,
+    );
+    expect(env('alloy.env').get('REDIS_METRICS_PASSWORD')).toBe(
+      env('redis.env').get('REDIS_METRICS_PASSWORD'),
+    );
+    for (const name of ['api.env', 'evolution.env', 'alloy.env']) {
+      expect(readFileSync(path.join(target, name), 'utf8'), name).not.toContain(redis);
+    }
     expect(env('api.env').get('EVOLUTION_API_KEY')).toBe(
       env('evolution.env').get('AUTHENTICATION_API_KEY'),
     );

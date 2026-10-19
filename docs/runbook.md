@@ -18,7 +18,7 @@ Operations procedures of Bot Center, phase 1 (one host). The architecture is in 
 | `migrate.env` | `migrate` (owner role of the database) | `infra/env/migrate.env.example` |
 | `evolution.env` | Evolution API secrets | `infra/env/evolution.env.example` |
 | `postgres.env` | PostgreSQL superuser and role passwords | `infra/env/postgres.env.example` |
-| `redis.env` | Redis password | `infra/env/redis.env.example` |
+| `redis.env` | Redis passwords of the ACL users `default`, `botcenter`, `evolution`, `metrics` | `infra/env/redis.env.example` |
 | `alloy.env` | Grafana Cloud credentials | `infra/env/alloy.env.example` |
 | `backup.env` | Backup, restore test, disk check, Evolution retention | `infra/env/backup.env.example` |
 | `restic.env` | restic repository and R2 credentials | `infra/env/restic.env.example` |
@@ -318,12 +318,18 @@ A change of Baileys can break every connection. Renovate opens the update only a
 
 ### 13.4 Redis password, Evolution API key, internal webhook secret
 
+A host that has env files from before the Redis users (SEC-11): `gen-secrets.sh` does not change existing files. Add `REDIS_BOTCENTER_PASSWORD`, `REDIS_EVOLUTION_PASSWORD`, and `REDIS_METRICS_PASSWORD` (each `openssl rand -hex 32`) to the files of step 2 by hand. Redis does not start while a value is missing.
+
 1. Make a new value: `openssl rand -hex 32`.
 2. Change it in every file:
-   - Redis password: `redis.env`, `api.env` (`REDIS_URL`), `evolution.env` (`CACHE_REDIS_URI`).
+   - Redis passwords (one ACL user for each client, SEC-11):
+     - `default` (`REDIS_PASSWORD`): `redis.env` only.
+     - `botcenter` (`REDIS_BOTCENTER_PASSWORD`): `redis.env` and `api.env` (`REDIS_URL`).
+     - `evolution` (`REDIS_EVOLUTION_PASSWORD`): `redis.env` and `evolution.env` (`CACHE_REDIS_URI`).
+     - `metrics` (`REDIS_METRICS_PASSWORD`): `redis.env` and `alloy.env`.
    - Evolution API key: `evolution.env` (`AUTHENTICATION_API_KEY`) and `api.env` (`EVOLUTION_API_KEY`).
    - Internal webhook secret: `api.env` (`EVOLUTION_WEBHOOK_SECRET`).
-3. Restart: `bc up -d --force-recreate redis evolution api worker`.
+3. Restart: `bc up -d --force-recreate redis evolution api worker alloy`.
 
    CAUTION: The restart stops the queues and the WhatsApp connections for some seconds. The jobs stay in Redis (AOF).
 
@@ -416,7 +422,7 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 3. If the worker is not healthy, restart it: `bc restart worker`.
 4. If the `outbound` delay grows and the failures are low, the rate limit of the instances can be the cause (a bulk send to one number). This is the expected behavior. Tell the tenant.
 5. If the Evolution API answers slowly, check its memory (`docker stats --no-stream`) and the host CPU. Do procedure 15 if a trigger occurred.
-6. If Redis refuses writes (`OOM command not allowed` in the logs), Redis is full: `noeviction` keeps the jobs. Increase `REDIS_MAXMEMORY` and the Redis memory limit, then `bc up -d redis`. Find the queue that grows.
+6. If Redis refuses writes (`OOM command not allowed` in the logs, alerts `RedisMemoryHigh` and `RedisMemoryCritical`), Redis is full: `noeviction` keeps the jobs. Increase `REDIS_MAXMEMORY` and the Redis memory limit, then `bc up -d redis`. Find the queue that grows.
 
 ### 17.3 Number banned (alerts `SendFailureRateHigh`, `InstanceSendFailureRateHigh`, `InstanceLoggedOut`)
 
@@ -510,7 +516,8 @@ Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_host_files
 | 9465 | `api`, address `10.203.3.20` | Alloy (`metrics`): `/metrics` only |
 | 9464 | `worker`, address `10.203.3.21` | Alloy (`metrics`): `/metrics`, `/health/live`, `/health/ready` |
 | 8080 | `evolution` | `api` and `worker` (`internal`) |
-| 5432, 6379 | `postgres`, `redis` | the `internal` network only |
+| 5432 | `postgres` | the `internal` network only |
+| 6379 | `redis` | `internal` (users `botcenter` and `evolution`), `metrics` (Alloy, user `metrics`) |
 
 The fixed addresses are in `infra/compose/compose.prod.yml` (subnets `10.203.1.0/24` `internal`, `10.203.2.0/24` `egress`, `10.203.3.0/24` `metrics`). The chain `BOTCENTER-EVO` of `DOCKER-USER` limits the Evolution container (`10.203.1.30`, `10.203.2.30`): in the private ranges and `169.254.0.0/16`, it can connect only to PostgreSQL, Redis, and port 3000 of the API. The internet stays open.
 

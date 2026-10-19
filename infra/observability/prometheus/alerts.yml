@@ -14,6 +14,7 @@
 #   botcenter_bot_webhook_calls_total{result}   counter: call_webhook actions of the bots (same values)
 #   botcenter_rate_limit_denied_total{scope}    counter: denied requests (key, instance)
 #   http_request_duration_seconds               histogram: API latency (method, route, status_code)
+# Metrics of Redis: the Redis exporter of Alloy (redis_up, redis_memory_used_bytes, redis_memory_max_bytes).
 # Metrics of the host: node exporter of Alloy, and the text files of infra/backup (backup, restore test,
 # and the disk usage botcenter_host_filesystem_* of disk-check.sh; Alloy has no host root mount).
 # Severities: critical (act now, Discord with mention), warning (act in working hours), info.
@@ -268,6 +269,37 @@ groups:
         annotations:
           summary: 'Memory usage is {{ $value | humanizePercentage }} on {{ $labels.host }}'
           description: 'This is a trigger to scale up (runbook: "Scale up"). The memory per connected instance of the Evolution API is the main cost.'
+
+  # Redis exporter of Alloy (user `metrics`). Redis is shared with the Evolution API, and noeviction makes
+  # a full Redis refuse the writes of both.
+  - name: botcenter-redis
+    rules:
+      - alert: RedisMemoryHigh
+        expr: max by (host) (redis_memory_used_bytes / (redis_memory_max_bytes > 0)) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Redis uses {{ $value | humanizePercentage }} of its maxmemory on {{ $labels.host }}'
+          description: 'Redis refuses writes when it is full (noeviction): the queues and the Evolution cache stop. Runbook: "Incident: queue backlog", step 6.'
+
+      - alert: RedisMemoryCritical
+        expr: max by (host) (redis_memory_used_bytes / (redis_memory_max_bytes > 0)) > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Redis uses {{ $value | humanizePercentage }} of its maxmemory on {{ $labels.host }}'
+          description: 'Redis refuses writes when it is full (noeviction): the queues and the Evolution cache stop. Runbook: "Incident: queue backlog", step 6.'
+
+      - alert: RedisDown
+        expr: max by (host) (redis_up) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The Redis exporter cannot reach Redis on {{ $labels.host }}'
+          description: 'The queues, the rate limits, and the Evolution cache do not work. Check `bc ps redis` and `bc logs --since 15m redis`.'
 
   - name: botcenter-backup
     rules:

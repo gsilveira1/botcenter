@@ -270,3 +270,42 @@ tests:
             exp_annotations:
               summary: '40% of the bot webhook calls failed in 15 minutes on h2'
               description: 'An endpoint of a `call_webhook` action does not answer 2xx. The calls retry. Tell the owner of the bot.'
+
+  # Redis is shared with the Evolution API. noeviction: a full Redis refuses the writes of both.
+  - name: Redis memory above 80 % warns, above 90 % is critical, and a Redis that is down fires
+    interval: 1m
+    input_series:
+      - series: 'redis_memory_max_bytes{host="h1", job="redis"}'
+        values: '100x20'
+      - series: 'redis_memory_used_bytes{host="h1", job="redis"}'
+        values: '50 85 85 85 85 85 85 85 95 95 95 95 95 95 95 95'
+      - series: 'redis_up{host="h1", job="redis"}'
+        values: '1 1 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RedisMemoryHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: h1
+            exp_annotations:
+              summary: 'Redis uses 85% of its maxmemory on h1'
+              description: 'Redis refuses writes when it is full (noeviction): the queues and the Evolution cache stop. Runbook: "Incident: queue backlog", step 6.'
+      - eval_time: 14m
+        alertname: RedisMemoryCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'Redis uses 95% of its maxmemory on h1'
+              description: 'Redis refuses writes when it is full (noeviction): the queues and the Evolution cache stop. Runbook: "Incident: queue backlog", step 6.'
+      - eval_time: 5m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'The Redis exporter cannot reach Redis on h1'
+              description: 'The queues, the rate limits, and the Evolution cache do not work. Check `bc ps redis` and `bc logs --since 15m redis`.'
