@@ -27,7 +27,8 @@ export type OutboundFailureReason =
   | 'media_type_not_accepted'
   | 'internal_error'
   | 'provider_error'
-  | 'instance_queue_full';
+  | 'instance_queue_full'
+  | 'expired';
 
 export type SendErrorKind = 'not_connected' | 'unavailable' | 'ambiguous';
 

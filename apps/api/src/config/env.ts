@@ -141,6 +141,14 @@ export const EnvSchema = z.object({
    * `QUOTA_EXCEEDED` and a new bot reply is written as `failed` (`instance_queue_full`).
    */
   OUTBOUND_MAX_QUEUED_PER_INSTANCE: positiveInt.max(1_000_000).default(1_000),
+  /**
+   * Maximum age of a `queued` outbound row. The outbound sweep writes an older row as `failed`
+   * (`expired`), with the `message.status` event. Default: 24 h.
+   */
+  OUTBOUND_QUEUED_MAX_AGE_SECONDS: positiveInt
+    .min(600)
+    .max(30 * 86_400)
+    .default(86_400),
   /** Validity of the pre-signed upload URL of `POST /v1/media`. */
   MEDIA_UPLOAD_URL_TTL_SECONDS: positiveInt.max(3_600).default(900),
   /** Validity of the pre-signed download URL that the provider gets for a media message. */

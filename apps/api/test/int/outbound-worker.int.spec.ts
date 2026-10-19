@@ -242,6 +242,28 @@ describe('outbound worker (in-memory provider)', () => {
     await waitForStatus(row.id, 'sent');
   });
 
+  it('expires a queued row older than one day, with the status event', async () => {
+    const f = await fixture({ status: 'connecting' });
+    const row = await h.prisma.message.create({
+      data: {
+        tenantId: f.tenant.id,
+        instanceId: f.instance.id,
+        direction: 'outbound',
+        type: 'text',
+        status: 'queued',
+        contact: '5511987654321',
+        content: { type: 'text', text: 'Oi' },
+        createdAt: new Date(Date.now() - 25 * 3_600_000),
+      },
+    });
+    const result = await worker.get(OutboundSweep).run();
+    expect(result.expired).toBeGreaterThanOrEqual(1);
+    expect(await message(row.id)).toMatchObject({ status: 'failed', failureReason: 'expired' });
+    expect(await statusEvents(row.id)).toEqual([
+      expect.objectContaining({ status: 'failed', failure_reason: 'expired' }),
+    ]);
+  });
+
   it('ends the inbound job of a status event for an unknown message', async () => {
     const f = await fixture();
     const webhook = evolutionStatus({

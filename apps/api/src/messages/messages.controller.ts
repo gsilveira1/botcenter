@@ -43,7 +43,8 @@ export const SEND_DESCRIPTION = [
   '  `provider_unavailable`, `send_timeout`, `instance_deleted`, `instance_not_connected`,',
   '  `media_not_found`, `media_not_uploaded`, `media_url_forbidden`, `media_download_failed`,',
   '  `media_too_large`, `media_type_not_accepted`, `internal_error`, `provider_error`,',
-  '  `instance_queue_full` (a bot reply above the queue limit).',
+  '  `instance_queue_full` (a bot reply above the queue limit), `expired` (still `queued` after',
+  '  `OUTBOUND_QUEUED_MAX_AGE_SECONDS`, default 24 h).',
 ].join('\n');
 
 @Controller('v1/messages')

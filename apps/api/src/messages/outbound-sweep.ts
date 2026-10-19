@@ -1,10 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import type { MessagePriority } from '@botcenter/contracts';
+import { ENV } from '../config/env';
+import type { AppEnv } from '../config/env';
 import { getLogger } from '../logging/logger';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueuesService } from '../queues/queues.service';
 import { MessageStatusWriter } from './message-status.writer';
 import { OutboundMessagesService } from './outbound-messages.service';
+import type { OutboundFailureReason } from './retry-policy';
 
 /** A `queued` row younger than this can still wait for its first enqueue (the API adds the job after the commit). */
 export const SWEEP_MIN_AGE_MS = 60_000;
@@ -15,6 +18,8 @@ export interface SweepResult {
   checked: number;
   requeued: number;
   failed: number;
+  /** Rows older than `OUTBOUND_QUEUED_MAX_AGE_SECONDS`, now `failed` with the reason `expired`. */
+  expired: number;
 }
 
 interface QueuedRow {
@@ -26,6 +31,15 @@ interface QueuedRow {
   instance: { externalRef: string };
 }
 
+const QUEUED_ROW_SELECT = {
+  id: true,
+  createdAt: true,
+  tenantId: true,
+  instanceId: true,
+  priority: true,
+  instance: { select: { externalRef: true } },
+} as const;
+
 /**
  * The repeatable `sweep` job of the `outbound` queue (every minute). It finds `queued` outbound rows older
  * than one minute and reads the state of their job (the job id is the message id):
@@ -33,6 +47,9 @@ interface QueuedRow {
  * - a completed job (a run ended without a status write): remove the job and enqueue it again;
  * - a failed job (an unexpected error on the last attempt): write `failed` (`internal_error`);
  * - a waiting, delayed, or active job: nothing.
+ * First, a `queued` row older than `OUTBOUND_QUEUED_MAX_AGE_SECONDS` (default 24 h) becomes `failed`
+ * with the reason `expired` and its `message.status` event (at most 500 rows in each run). Its job then
+ * ends without a send.
  * The query is across the tenants (a system task); each write has the `tenantId` of its row.
  */
 @Injectable()
@@ -46,12 +63,14 @@ export class OutboundSweep {
     private readonly queues: QueuesService,
     private readonly outbound: OutboundMessagesService,
     private readonly writer: MessageStatusWriter,
+    @Inject(ENV) private readonly env: AppEnv,
   ) {}
 
   async run(now = new Date()): Promise<SweepResult> {
+    const expired = await this.expireOld(now);
     const rows = await this.findQueued(now);
     if (rows.length === 0) {
-      return { checked: 0, requeued: 0, failed: 0 };
+      return { checked: 0, requeued: 0, failed: 0, expired };
     }
     const queue = this.queues.get('outbound');
     const states = await Promise.all(rows.map((row) => queue.getJobState(row.id)));
@@ -61,11 +80,34 @@ export class OutboundSweep {
     const requeued = await this.outbound.enqueue(
       withState('unknown', 'completed').map((row) => ({ ...row, messageId: row.id })),
     );
-    const failed = await this.failLost(withState('failed'));
+    const failed = await this.failAll(withState('failed'), 'internal_error');
     if (requeued > 0 || failed > 0) {
       this.logger.warn({ checked: rows.length, requeued, failed }, 'outbound sweep fixed messages');
     }
-    return { checked: rows.length, requeued, failed };
+    return { checked: rows.length, requeued, failed, expired };
+  }
+
+  /** Fails the oldest `queued` rows that passed the maximum age (reason `expired`). */
+  private async expireOld(now: Date): Promise<number> {
+    const maxAgeMs = this.env.OUTBOUND_QUEUED_MAX_AGE_SECONDS * 1000;
+    const rows = await this.prisma.message.findMany({
+      where: {
+        direction: 'outbound',
+        status: 'queued',
+        createdAt: { lt: new Date(now.getTime() - maxAgeMs) },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: SWEEP_BATCH_SIZE,
+      select: QUEUED_ROW_SELECT,
+    });
+    const expired = await this.failAll(rows, 'expired');
+    if (expired > 0) {
+      this.logger.warn(
+        { expired, max_age_seconds: this.env.OUTBOUND_QUEUED_MAX_AGE_SECONDS },
+        'outbound rows expired before their send',
+      );
+    }
+    return expired;
   }
 
   /**
@@ -92,14 +134,7 @@ export class OutboundSweep {
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       take: SWEEP_BATCH_SIZE,
-      select: {
-        id: true,
-        createdAt: true,
-        tenantId: true,
-        instanceId: true,
-        priority: true,
-        instance: { select: { externalRef: true } },
-      },
+      select: QUEUED_ROW_SELECT,
     });
     const last = rows.at(-1);
     this.cursor =
@@ -107,7 +142,10 @@ export class OutboundSweep {
     return rows;
   }
 
-  private async failLost(rows: readonly QueuedRow[]): Promise<number> {
+  private async failAll(
+    rows: readonly QueuedRow[],
+    reason: OutboundFailureReason,
+  ): Promise<number> {
     const results = await Promise.all(
       rows.map((row) =>
         this.writer.apply(
@@ -117,7 +155,7 @@ export class OutboundSweep {
             instanceId: row.instanceId,
             externalRef: row.instance.externalRef,
           },
-          { status: 'failed', reason: 'internal_error', at: new Date() },
+          { status: 'failed', reason, at: new Date() },
         ),
       ),
     );
