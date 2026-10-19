@@ -33,7 +33,7 @@ Every provider of `CoreModule` is global in both processes. Inject it without an
 | `PrismaService`                                    | Prisma 7 client. Use `forTenant(tenantId)` for tenant tables: it adds the `tenantId` filter    |
 | `REDIS`                                            | The shared `ioredis` client (request path, commands fail after 2 s)                            |
 | `MetricsService`                                   | The Prometheus registry and the shared metrics (`botcenter_*`)                                 |
-| `WHATSAPP_PROVIDER`, `PROVIDER_WEBHOOK_NORMALIZER` | The provider pair (`@botcenter/whatsapp-provider` types)                                       |
+| `WHATSAPP_PROVIDER`, `PROVIDER_WEBHOOK_NORMALIZER` | `EvolutionProvider` and `EvolutionWebhookNormalizer` (`src/provider/provider.factory.ts`)      |
 | `AlertService`                                     | `notify({ severity, title, details, dedupeKey })`. Never throws                                |
 | `AuditService`                                     | `record(entry, tx?)`. Insert only                                                              |
 | `TenantsService`                                   | `get(tenantId)` with the quotas (60 s cache), `invalidate(tenantId)`                           |
@@ -133,4 +133,23 @@ export class MessageStatusHandler implements InboundHandler<'message.status'>, O
 ## Tests
 
 - Unit tests: `src/**/*.spec.ts`. Use `testEnv()` from `test/support/env.ts` for a valid environment.
-- Integration tests: `test/int/**/*.int.spec.ts` with `TestHarness` from `test/support/harness.ts`. One harness for each file starts PostgreSQL 16 and Redis 7 (random ports), applies the migrations, and builds the API with `FakeWhatsAppProvider`, `FakeWebhookNormalizer`, and a recording `AlertService` (`h.alerts`). Helpers: `h.createTenant()`, `h.createApiKey()`, `h.createInstance()`, `h.inject()`, `h.bearer(key)`, `h.internalHeaders()`, `h.startWorker(modules)`.
+- Integration tests: `test/int/**/*.int.spec.ts` with `TestHarness` from `test/support/harness.ts`. One harness for each file starts PostgreSQL 16 and Redis 7 (random ports), applies the migrations, and builds the API with the real `EvolutionWebhookNormalizer` and a recording `AlertService` (`h.alerts`). Helpers: `h.createTenant()`, `h.createApiKey()`, `h.createInstance()`, `h.inject()`, `h.bearer(key)`, `h.internalHeaders()`, `h.postProviderWebhook(body)`, `h.startWorker(modules)`, and `waitFor(check)` from `test/support/wait-for.ts`.
+- Default mode: the provider is the in-memory `FakeWhatsAppProvider` of `@botcenter/whatsapp-provider/testing` (`h.provider`: `sent`, `calls`, `failNext(method, code)`, `setState`). The API process and the worker process share it. Make the webhook bodies with `evolutionInboundText()` and `evolutionStatus()` from `test/support/fake-provider.ts`. Each one returns the real Evolution body and the `dedupeKey` of its event:
+
+  ```ts
+  const webhook = evolutionInboundText({ instanceName: instance.providerName, text: 'Oi' });
+  const response = await h.postProviderWebhook(webhook.body); // 200 { received: 1, enqueued: 1 }
+  const job = await h.get(QueuesService).get('inbound').getJob(inboundJobId(webhook.dedupeKey));
+  ```
+
+- HTTP mode: `TestHarness.start({ fakeEvolution: true })` starts a `FakeEvolutionServer` (`h.evolution`). The real `providerFactory` binds the real `EvolutionProvider` (`h.whatsapp`) to it, and the app listens on `127.0.0.1` (`h.baseUrl`). `h.provider` throws in this mode.
+
+  ```ts
+  await h.whatsapp.createInstance({
+    name,
+    webhookUrl: h.webhookUrl,
+    webhookSecret: h.env.EVOLUTION_WEBHOOK_SECRET,
+  });
+  await h.evolution.emitConnected(name, '5511912345678'); // the fake server posts the webhook to the app
+  await h.evolution.emitInboundText(name, { from: '5511987654321', text: 'Oi' });
+  ```
