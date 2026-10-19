@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { InstancesWorkerModule } from './instances/instances.module';
 import { CoreModule } from './core/core.module';
 import { WorkerCoreModule } from './core/worker-core.module';
 import { InboundWorkerModule } from './inbound/inbound.module';
@@ -9,6 +10,12 @@ import { MessagesWorkerModule } from './messages/messages.module';
  * Only the orchestrator edits this file: it adds the `*WorkerModule` of each wave 2 slice to `imports`.
  */
 @Module({
-  imports: [CoreModule, WorkerCoreModule, InboundWorkerModule, MessagesWorkerModule],
+  imports: [
+    CoreModule,
+    WorkerCoreModule,
+    InboundWorkerModule,
+    MessagesWorkerModule,
+    InstancesWorkerModule,
+  ],
 })
 export class WorkerModule {}

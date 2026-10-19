@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { InstancesApiModule } from './instances/instances.module';
 import { ApiCoreModule } from './core/api-core.module';
 import { CoreModule } from './core/core.module';
 import { InboundApiModule } from './inbound/inbound.module';
@@ -9,6 +10,6 @@ import { MessagesApiModule } from './messages/messages.module';
  * Only the orchestrator edits this file: it adds the `*ApiModule` of each wave 2 slice to `imports`.
  */
 @Module({
-  imports: [CoreModule, ApiCoreModule, InboundApiModule, MessagesApiModule],
+  imports: [CoreModule, ApiCoreModule, InboundApiModule, MessagesApiModule, InstancesApiModule],
 })
 export class AppModule {}
