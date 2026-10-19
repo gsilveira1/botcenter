@@ -53,16 +53,17 @@ function build(updatedCount: number, changes: Partial<typeof row> = {}, definiti
     }),
   } as unknown as PrismaService;
   const timers = { cancel: vi.fn(async () => undefined), schedule: vi.fn(async () => undefined) };
+  const cache = { delete: vi.fn(async () => undefined), set: vi.fn(async () => undefined) };
   const service = new ConversationsService(
     prisma,
     { enqueue: vi.fn(async () => 'e1') } as unknown as OutboxService,
     { record: vi.fn(async () => 'a1') } as unknown as AuditService,
-    { delete: vi.fn(async () => undefined) } as unknown as ConversationCacheService,
+    cache as unknown as ConversationCacheService,
     timers as unknown as ConversationTimersService,
     definitions as BotDefinitionsService,
     new ConversationMetrics(new MetricsService(testEnv())),
   );
-  return { service, tx, timers, findUnique };
+  return { service, tx, timers, findUnique, cache };
 }
 
 describe('ConversationsService.handoff', () => {
@@ -114,6 +115,15 @@ describe('ConversationsService.handoff', () => {
       expect.objectContaining({ jobId: 'timer-c1-v3', fireAt: data['timerFireAt'] }),
       { tenantId: 't1', conversationId: 'c1' },
       expect.any(Date),
+    );
+  });
+
+  it('writes the new record to the hot cache after the commit (ARCH-09)', async () => {
+    const { service, cache } = build(1);
+    await service.handoff(auth, 'c1', 'human');
+    // A newer version in the cache: an older entry of a running worker cannot replace it.
+    expect(cache.set).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'c1', handoff: true, version: 3, state: 'inicio' }),
     );
   });
 });

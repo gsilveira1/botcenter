@@ -11,6 +11,24 @@ import { ConversationRecord } from './conversation-record';
 export const CONVERSATION_CACHE_TTL_SECONDS = 3_600;
 
 /**
+ * Compare-and-set on `version` (ARCH-09): the entry changes only when the cached version is not newer.
+ * So a worker that read PostgreSQL before a handoff cannot put the older record back after the handoff
+ * wrote the newer one. KEYS[1] = key, ARGV = record JSON, version, TTL in seconds. Returns 1 or 0.
+ */
+const SET_IF_NOT_OLDER = `
+local current = redis.call('GET', KEYS[1])
+if current then
+  local ok, cached = pcall(cjson.decode, current)
+  if ok and type(cached) == 'table' and tonumber(cached['version']) ~= nil
+    and tonumber(cached['version']) > tonumber(ARGV[2]) then
+    return 0
+  end
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', tonumber(ARGV[3]))
+return 1
+`;
+
+/**
  * The hot state of the conversations in Redis (architecture: "the hot state is in Redis with a TTL;
  * PostgreSQL is the source of truth"). Every method tolerates a Redis failure: it logs the error, counts
  * it, and the caller continues with PostgreSQL (slower, still correct).
@@ -39,10 +57,21 @@ export class ConversationCacheService {
     return parsed;
   }
 
+  /** Writes the record, unless the cache has a newer version of the conversation. */
   async set(record: ConversationRecord): Promise<void> {
     const key = redisKeys.conversation(record.instanceId, contactKey(record.contact));
     try {
-      await this.redis.set(key, JSON.stringify(record), 'EX', CONVERSATION_CACHE_TTL_SECONDS);
+      const written = await this.redis.eval(
+        SET_IF_NOT_OLDER,
+        1,
+        key,
+        JSON.stringify(record),
+        record.version,
+        CONVERSATION_CACHE_TTL_SECONDS,
+      );
+      if (written === 0) {
+        this.metrics.cache.inc({ result: 'stale_write' });
+      }
     } catch (error) {
       // A missing entry is safe: the next read uses PostgreSQL. Delete a stale entry if possible.
       this.failed(error, 'write');
@@ -54,7 +83,8 @@ export class ConversationCacheService {
     try {
       await this.redis.del(redisKeys.conversation(instanceId, contactKey(contact)));
     } catch (error) {
-      // A stale entry is safe: its `version` is old, so the next write conflicts and reloads.
+      // A stale entry is safe: its `version` is old, so the next write conflicts and reloads, and a
+      // cached handoff is read again from PostgreSQL before the bot skips a message (ARCH-09).
       this.failed(error, 'delete');
     }
   }

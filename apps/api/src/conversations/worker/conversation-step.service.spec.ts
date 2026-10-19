@@ -178,6 +178,17 @@ describe('ConversationStepService.applyMessage', () => {
     );
   });
 
+  it('reads PostgreSQL before a handoff skip, so a stale cache entry cannot stop the bot (ARCH-09)', async () => {
+    const { service, loader, writer } = build(record({ handoff: true }));
+    // The cache says `handoff = true`, but PostgreSQL says the bot runs the conversation again.
+    loader.load.mockResolvedValueOnce(record({ handoff: true }));
+    loader.load.mockResolvedValueOnce(record({ handoff: false }));
+    await service.applyMessage(instance, message('1'));
+    expect(loader.load.mock.calls[1]).toEqual([instance, '5511987654321', { fresh: true }]);
+    expect(writer.consumeOnly).not.toHaveBeenCalled();
+    expect(writer.write).toHaveBeenCalledTimes(1);
+  });
+
   it('skips a message with an alert when the bot data is broken', async () => {
     const { service, writer, definitions, alerts } = build(record());
     definitions.version.mockRejectedValueOnce(new BotDataError('missing version'));

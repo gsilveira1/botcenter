@@ -25,7 +25,7 @@ const record: ConversationRecord = {
   lastMenu: null,
 };
 
-function build(redis: Partial<Record<'get' | 'set' | 'del', ReturnType<typeof vi.fn>>>) {
+function build(redis: Partial<Record<'get' | 'set' | 'del' | 'eval', ReturnType<typeof vi.fn>>>) {
   const metrics = new ConversationMetrics(new MetricsService(testEnv()));
   return { cache: new ConversationCacheService(redis as unknown as Redis, metrics), metrics };
 }
@@ -39,19 +39,31 @@ describe('ConversationCacheService', () => {
 
   it('writes the record with a TTL under a key without the phone, and reads it back', async () => {
     const store = new Map<string, string>();
-    const set = vi.fn(async (k: string, v: string) => store.set(k, v));
+    const evalFn = vi.fn(async (_script: string, _keys: number, k: string, v: string) => {
+      store.set(k, v);
+      return 1;
+    });
     const get = vi.fn(async (k: string) => store.get(k) ?? null);
-    const { cache, metrics } = build({ get, set });
+    const { cache, metrics } = build({ get, eval: evalFn });
     await cache.set(record);
-    expect(set).toHaveBeenCalledWith(
+    expect(evalFn).toHaveBeenCalledWith(
+      expect.any(String),
+      1,
       key,
       JSON.stringify(record),
-      'EX',
+      record.version,
       CONVERSATION_CACHE_TTL_SECONDS,
     );
     expect(key).not.toContain(record.contact);
     await expect(cache.get(record.instanceId, record.contact)).resolves.toEqual(record);
     expect(await count(metrics, 'hit')).toBe(1);
+  });
+
+  it('never replaces a newer cached version with an older one (ARCH-09)', async () => {
+    const evalFn = vi.fn(async () => 0);
+    const { cache, metrics } = build({ eval: evalFn });
+    await cache.set({ ...record, version: 1 });
+    expect(await count(metrics, 'stale_write')).toBe(1);
   });
 
   it('gives null for a broken entry and for a Redis failure (PostgreSQL is used then)', async () => {
@@ -67,7 +79,7 @@ describe('ConversationCacheService', () => {
   it('deletes the entry when a write fails, and never throws', async () => {
     const del = vi.fn(async () => Promise.reject(new Error('down')));
     const { cache, metrics } = build({
-      set: vi.fn(async () => Promise.reject(new Error('down'))),
+      eval: vi.fn(async () => Promise.reject(new Error('down'))),
       del,
     });
     await expect(cache.set(record)).resolves.toBeUndefined();

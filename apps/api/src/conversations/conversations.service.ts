@@ -13,6 +13,7 @@ import { OutboxService } from '../services/outbox.service';
 import { BotDataError, BotDefinitionsService } from './bot-definitions.service';
 import { ConversationCacheService } from './conversation-cache.service';
 import { ConversationMetrics } from './conversation-metrics';
+import { toConversationRecord } from './conversation-record';
 import { CONVERSATION_RESPONSE_INCLUDE, toConversationResponse } from './conversation-response';
 import type { ConversationWithResponseData } from './conversation-response';
 import { ConversationTimersService } from './conversation-timers.service';
@@ -158,15 +159,18 @@ export class ConversationsService {
   }
 
   /**
-   * After the commit: drop the hot cache entry, then remove the pending timer (`human`) or add the timer
-   * of the current state with the new version (`bot`).
+   * After the commit: write the new record to the hot cache (ARCH-09: the compare-and-set on `version`
+   * keeps an older record of a running worker out; a failed write deletes the entry), then remove the
+   * pending timer (`human`) or add the timer of the current state with the new version (`bot`).
    */
   private async afterHandoff(
     row: ConversationWithResponseData,
     target: HandoffRequest['to'],
     timer: TimerPlan | null,
   ): Promise<void> {
-    await this.cache.delete(row.instanceId, row.contact);
+    await this.cache.set(
+      toConversationRecord({ ...row, handoff: target === 'human', version: row.version + 1 }),
+    );
     if (target === 'human') {
       await this.timers.cancel(timerJobId(row.id, row.version));
       return;

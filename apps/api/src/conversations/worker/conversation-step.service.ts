@@ -158,7 +158,12 @@ export class ConversationStepService {
     if (instance.botId === null) {
       return { skip: 'no_bot', conversationId: null };
     }
-    const conversation = await this.loader.load(instance, message.contact, { fresh });
+    let conversation = await this.loader.load(instance, message.contact, { fresh });
+    if (conversation?.handoff && !fresh) {
+      // ARCH-09: a skip writes no conversation, so no version check finds a stale cache entry. A
+      // handoff is rare: read PostgreSQL before the bot ignores the message.
+      conversation = await this.loader.load(instance, message.contact, { fresh: true });
+    }
     if (conversation?.handoff) {
       return { skip: 'handoff', conversationId: conversation.id };
     }

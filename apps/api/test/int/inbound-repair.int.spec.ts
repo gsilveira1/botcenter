@@ -3,6 +3,9 @@ import type { BotDefinitionInput } from '@botcenter/contracts';
 import { newMessageId } from '@botcenter/whatsapp-provider/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ConversationsApiModule } from '../../src/conversations/conversations.module';
+import { ConversationCacheService } from '../../src/conversations/conversation-cache.service';
+import { contactKey } from '../../src/conversations/conversation-keys';
+import { toConversationRecord } from '../../src/conversations/conversation-record';
 import { InboundStoreService } from '../../src/conversations/worker/inbound-store.service';
 import { timerJobId } from '@botcenter/engine';
 import { InstanceResolver } from '../../src/conversations/worker/instance-context';
@@ -11,6 +14,7 @@ import type { Instance } from '../../src/generated/prisma/client';
 import { INBOUND_SWEEP_JOB, INBOUND_SWEEP_SCHEDULER } from '../../src/inbound/inbound.worker';
 import { EXTERNAL_HTTP } from '../../src/ports/external-http.port';
 import { QueuesService } from '../../src/queues/queues.service';
+import { redisKeys } from '../../src/redis/redis-keys';
 import { FakeExternalHttp } from '../support/conversation-ports';
 import { TestHarness } from '../support/harness';
 import { waitFor } from '../support/wait-for';
@@ -198,5 +202,53 @@ describe('lost state timer (ARCH-08)', () => {
     await runSweep();
 
     expect((await conversationOf(s, contact))!.timerFireAt).toBeNull();
+  });
+});
+
+describe('stale hot cache with handoff (ARCH-09)', () => {
+  function handoff(s: Setup, id: string, to: 'human' | 'bot') {
+    return h.inject({
+      method: 'POST',
+      url: `/v1/conversations/${id}/handoff`,
+      headers: { ...h.bearer(s.key), 'content-type': 'application/json' },
+      payload: JSON.stringify({ to }),
+    });
+  }
+
+  it('keeps a newer cached version when an older record arrives late', async () => {
+    const s = await setup(timed);
+    const contact = nextContact();
+    await say(s, contact, 'Oi');
+    const row = (await conversationOf(s, contact))!;
+    expect((await handoff(s, row.id, 'human')).statusCode).toBe(200);
+    expect((await handoff(s, row.id, 'bot')).statusCode).toBe(200);
+
+    // A worker read PostgreSQL before the handoff to the bot and writes its old record now.
+    const cache = worker.get(ConversationCacheService);
+    await cache.set(toConversationRecord({ ...row, handoff: true, version: 1 }));
+
+    const cached = await cache.get(s.instance.id, contact);
+    expect(cached).toMatchObject({ handoff: false, version: 2 });
+  });
+
+  it('runs the bot when the cache keeps handoff = true after the handoff to the bot', async () => {
+    const s = await setup(timed);
+    const contact = nextContact();
+    await say(s, contact, 'Oi');
+    const row = (await conversationOf(s, contact))!;
+    await handoff(s, row.id, 'human');
+    await handoff(s, row.id, 'bot');
+    // Redis refused the write and the delete of the API: the old entry stays for 1 h.
+    const stale = toConversationRecord({ ...row, handoff: true, version: 1 });
+    await h.redis.set(
+      redisKeys.conversation(s.instance.id, contactKey(contact)),
+      JSON.stringify(stale),
+      'EX',
+      3_600,
+    );
+
+    await say(s, contact, 'a');
+
+    expect(await conversationOf(s, contact)).toMatchObject({ state: 'fim', handoff: false });
   });
 });
