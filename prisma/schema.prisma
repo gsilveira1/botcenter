@@ -1,0 +1,491 @@
+// Bot Center data model for v0.1.0 (docs/implementation-plan.md, section 5).
+// Table names are snake_case through `@@map`. Column names stay camelCase.
+// Every tenant table has `tenantId`, child tables included. The repository layer filters every query by it.
+// Enum values are identical to the values of `@botcenter/contracts`, so that the API does not map them.
+// Primary keys are UUID v7 (time ordered), so that the indexes stay compact.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../apps/api/src/generated/prisma"
+  moduleFormat        = "cjs"
+  runtime             = "nodejs"
+  importFileExtension = ""
+  previewFeatures     = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Enumerations
+// ---------------------------------------------------------------------------
+
+enum InstanceStatus {
+  created
+  connecting
+  connected
+  disconnected
+  logged_out
+
+  @@map("instance_status")
+}
+
+enum ConnectMethod {
+  qrcode
+  pairing_code
+
+  @@map("connect_method")
+}
+
+enum MessageDirection {
+  inbound
+  outbound
+
+  @@map("message_direction")
+}
+
+/// Outbound types: text, media, buttons, list. Inbound types: text, media, button_reply, list_reply, unsupported.
+enum MessageType {
+  text
+  media
+  buttons
+  list
+  button_reply
+  list_reply
+  unsupported
+
+  @@map("message_type")
+}
+
+/// `received` is for inbound messages only. The other values are the outbound lifecycle (contracts `MessageStatus`).
+enum MessageStatus {
+  received
+  queued
+  sent
+  delivered
+  read
+  failed
+
+  @@map("message_status")
+}
+
+enum MessagePriority {
+  reply
+  bulk
+
+  @@map("message_priority")
+}
+
+enum TransitionTrigger {
+  start
+  message
+  timeout
+
+  @@map("transition_trigger")
+}
+
+enum WebhookDeliveryStatus {
+  pending
+  succeeded
+  failed
+  dead
+
+  @@map("webhook_delivery_status")
+}
+
+enum MediaDirection {
+  inbound
+  outbound
+
+  @@map("media_direction")
+}
+
+// ---------------------------------------------------------------------------
+// Tenants and API keys
+// ---------------------------------------------------------------------------
+
+/// A client product (for example, PersonalLife). It owns the API keys, the instances, the bots, and the webhooks.
+model Tenant {
+  id                         String   @id @default(uuid(7)) @db.Uuid
+  name                       String
+  slug                       String   @unique
+  maxInstances               Int      @default(10)
+  maxMessagesPerDay          Int      @default(1000)
+  /// Messages older than this are deleted by the maintenance queue (LGPD).
+  retentionDays              Int      @default(90)
+  /// Default request limit of an API key of this tenant (fixed window of one minute).
+  rateLimitPerMinute         Int      @default(600)
+  /// Default send limit of a new instance (token bucket), when the request has no `rate_limit_per_minute`.
+  instanceRateLimitPerMinute Int      @default(20)
+  createdAt                  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt                  DateTime @updatedAt @db.Timestamptz(3)
+
+  apiKeys              ApiKey[]
+  instances            Instance[]
+  connectTokens        ConnectToken[]
+  bots                 Bot[]
+  botVersions          BotVersion[]
+  conversations        Conversation[]
+  transitions          ConversationTransition[]
+  messages             Message[]
+  outboxEvents         OutboxEvent[]
+  webhookSubscriptions WebhookSubscription[]
+  webhookDeliveries    WebhookDelivery[]
+  idempotencyKeys      IdempotencyKey[]
+  mediaObjects         MediaObject[]
+
+  @@map("tenants")
+}
+
+/// Key format: `bc_live_<prefix>_<secret>`. The database keeps only `sha256(pepper + secret)`.
+model ApiKey {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  tenantId           String    @db.Uuid
+  name               String
+  prefix             String    @unique
+  secretHash         String
+  /// Values of the contracts `Scope` enum.
+  scopes             String[]
+  /// Instances that the key can use. An empty list means all the instances of the tenant.
+  instanceIds        String[]  @db.Uuid
+  /// IP addresses or CIDR ranges. An empty list means any address.
+  allowedIps         String[]
+  /// `null` means the default of the tenant.
+  rateLimitPerMinute Int?
+  revokedAt          DateTime? @db.Timestamptz(3)
+  lastUsedAt         DateTime? @db.Timestamptz(3)
+  expiresAt          DateTime? @db.Timestamptz(3)
+  createdAt          DateTime  @default(now()) @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
+  @@map("api_keys")
+}
+
+// ---------------------------------------------------------------------------
+// Instances (WhatsApp numbers)
+// ---------------------------------------------------------------------------
+
+model Instance {
+  id                 String         @id @default(uuid(7)) @db.Uuid
+  tenantId           String         @db.Uuid
+  /// Opaque id of the end user in the client product.
+  externalRef        String
+  /// Name of the instance in the provider: `inst_<uuid>`. Never the phone or the name of the user.
+  providerName       String         @unique
+  status             InstanceStatus @default(created)
+  /// Masked phone number (`5511*****4321`), known after the connection.
+  phoneMasked        String?
+  /// Time when the end user accepted the terms and the ban risk notice.
+  consentAt          DateTime       @db.Timestamptz(3)
+  /// Host that runs the session (phase 3 routing). Phase 1 has one host.
+  host               String         @default("primary")
+  rateLimitPerMinute Int
+  botId              String?        @db.Uuid
+  deletedAt          DateTime?      @db.Timestamptz(3)
+  createdAt          DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime       @updatedAt @db.Timestamptz(3)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  bot           Bot?           @relation(fields: [botId], references: [id], onDelete: SetNull)
+  connectTokens ConnectToken[]
+  conversations Conversation[]
+  messages      Message[]
+  rawEvents     RawEvent[]
+
+  /// One active instance for each owner. A deleted instance frees the `externalRef`.
+  /// This partial index is also the `(tenantId, externalRef)` index of the plan.
+  @@unique([tenantId, externalRef], map: "instances_tenantId_externalRef_active_key", where: raw("\"deletedAt\" IS NULL"))
+  @@index([botId])
+  @@map("instances")
+}
+
+/// One-use token of the connect flow (10 minutes). The database keeps only the SHA-256 of the token.
+model ConnectToken {
+  id         String        @id @default(uuid(7)) @db.Uuid
+  tenantId   String        @db.Uuid
+  instanceId String        @db.Uuid
+  tokenHash  String        @unique
+  method     ConnectMethod
+  expiresAt  DateTime      @db.Timestamptz(3)
+  usedAt     DateTime?     @db.Timestamptz(3)
+  createdAt  DateTime      @default(now()) @db.Timestamptz(3)
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id])
+  instance Instance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+
+  @@index([instanceId])
+  @@index([expiresAt])
+  @@map("connect_tokens")
+}
+
+// ---------------------------------------------------------------------------
+// Bots and conversations
+// ---------------------------------------------------------------------------
+
+/// A bot. The public id is `slug` (`PUT /v1/bots/{slug}`), unique in the tenant.
+model Bot {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  tenantId       String   @db.Uuid
+  slug           String
+  name           String
+  currentVersion Int
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @db.Timestamptz(3)
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id])
+  versions      BotVersion[]
+  instances     Instance[]
+  conversations Conversation[]
+
+  @@unique([tenantId, slug])
+  @@map("bots")
+}
+
+/// One published definition. A version never changes after the insert.
+model BotVersion {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  tenantId   String   @db.Uuid
+  botId      String   @db.Uuid
+  version    Int
+  /// Parsed `BotDefinition` of the contracts.
+  definition Json
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  bot    Bot    @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@unique([botId, version])
+  @@map("bot_versions")
+}
+
+/// State of one contact on one instance. `version` is the optimistic lock: every write increments it.
+model Conversation {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  tenantId      String    @db.Uuid
+  instanceId    String    @db.Uuid
+  /// Phone number of the contact (E.164 digits without "+").
+  contact       String
+  botId         String    @db.Uuid
+  botVersion    Int
+  state         String
+  variables     Json      @default("{}")
+  version       Int       @default(0)
+  handoff       Boolean   @default(false)
+  lastInboundAt DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  tenant      Tenant                   @relation(fields: [tenantId], references: [id])
+  instance    Instance                 @relation(fields: [instanceId], references: [id])
+  bot         Bot                      @relation(fields: [botId], references: [id])
+  transitions ConversationTransition[]
+  messages    Message[]
+
+  @@unique([instanceId, contact])
+  @@index([tenantId])
+  @@index([botId])
+  @@map("conversations")
+}
+
+model ConversationTransition {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  tenantId       String            @db.Uuid
+  conversationId String            @db.Uuid
+  /// `null` when `trigger` is `start`.
+  fromState      String?
+  toState        String
+  trigger        TransitionTrigger
+  createdAt      DateTime          @default(now()) @db.Timestamptz(3)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id])
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("conversation_transitions")
+}
+
+// ---------------------------------------------------------------------------
+// Messages and media
+// ---------------------------------------------------------------------------
+
+model Message {
+  id                String           @id @default(uuid(7)) @db.Uuid
+  tenantId          String           @db.Uuid
+  instanceId        String           @db.Uuid
+  conversationId    String?          @db.Uuid
+  direction         MessageDirection
+  type              MessageType
+  status            MessageStatus
+  /// The other party: the recipient of an outbound message or the sender of an inbound message (E.164 digits).
+  contact           String
+  /// Message content (the contracts `MessageContent` for outbound). Personal data: deleted after `retentionDays`.
+  content           Json
+  /// Message id in WhatsApp, known after the send or on receipt.
+  providerMessageId String?
+  priority          MessagePriority  @default(bulk)
+  failureReason     String?
+  sentAt            DateTime?        @db.Timestamptz(3)
+  deliveredAt       DateTime?        @db.Timestamptz(3)
+  readAt            DateTime?        @db.Timestamptz(3)
+  createdAt         DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime         @updatedAt @db.Timestamptz(3)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  instance     Instance      @relation(fields: [instanceId], references: [id])
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@unique([instanceId, providerMessageId])
+  @@index([status, createdAt])
+  @@index([tenantId, createdAt])
+  @@index([instanceId, contact])
+  @@index([conversationId])
+  @@map("messages")
+}
+
+/// A file in the object storage (S3 API). `key` is the object key.
+model MediaObject {
+  id          String         @id @default(uuid(7)) @db.Uuid
+  tenantId    String         @db.Uuid
+  key         String         @unique
+  contentType String
+  sizeBytes   Int
+  fileName    String?
+  direction   MediaDirection
+  createdAt   DateTime       @default(now()) @db.Timestamptz(3)
+  expiresAt   DateTime?      @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([expiresAt])
+  @@map("media_objects")
+}
+
+// ---------------------------------------------------------------------------
+// Events and webhooks
+// ---------------------------------------------------------------------------
+
+/// Raw provider payload, for debugging. Kept 7 days. No tenant: the instance can be unknown.
+model RawEvent {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  instanceId String?  @db.Uuid
+  eventType  String
+  payload    Json
+  receivedAt DateTime @default(now()) @db.Timestamptz(3)
+
+  instance Instance? @relation(fields: [instanceId], references: [id], onDelete: SetNull)
+
+  @@index([receivedAt])
+  @@map("raw_events")
+}
+
+/// Outbox: a state change and its events are written in one transaction. `id` is the public event id.
+model OutboxEvent {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  tenantId     String    @db.Uuid
+  /// Value of the contracts `EventType` enum (for example, `message.status`).
+  type         String
+  /// The `data` of the contracts `WebhookEvent`.
+  payload      Json
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
+  dispatchedAt DateTime? @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  /// The dispatcher reads only the rows that are not dispatched.
+  @@index([createdAt], map: "outbox_events_pending_idx", where: raw("\"dispatchedAt\" IS NULL"))
+  @@index([dispatchedAt])
+  @@map("outbox_events")
+}
+
+model WebhookSubscription {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  tenantId        String    @db.Uuid
+  url             String
+  /// Values of the contracts `EventType` enum.
+  events          String[]
+  /// The signing secret, encrypted by the API with AES-256-GCM. The API owns the format and the key.
+  secretEncrypted String
+  active          Boolean   @default(true)
+  deletedAt       DateTime? @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(3)
+
+  tenant     Tenant            @relation(fields: [tenantId], references: [id])
+  deliveries WebhookDelivery[]
+
+  @@index([tenantId])
+  @@map("webhook_subscriptions")
+}
+
+/// One event for one subscription. The unique key makes the fan-out of the dispatcher idempotent.
+model WebhookDelivery {
+  id             String                @id @default(uuid(7)) @db.Uuid
+  tenantId       String                @db.Uuid
+  subscriptionId String                @db.Uuid
+  /// Id of the outbox event (the `Webhook-Id` header). No foreign key: the outbox rows are purged.
+  eventId        String                @db.Uuid
+  eventType      String
+  /// The full `WebhookEvent` body.
+  payload        Json
+  status         WebhookDeliveryStatus @default(pending)
+  attempts       Int                   @default(0)
+  lastStatusCode Int?
+  lastError      String?
+  nextAttemptAt  DateTime?             @db.Timestamptz(3)
+  createdAt      DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime              @updatedAt @db.Timestamptz(3)
+
+  tenant       Tenant              @relation(fields: [tenantId], references: [id])
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, eventId])
+  @@index([status, nextAttemptAt])
+  @@index([tenantId, createdAt])
+  @@map("webhook_deliveries")
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency and audit
+// ---------------------------------------------------------------------------
+
+/// `Idempotency-Key` of a write request (24 hours). `lockedUntil` marks a request in progress.
+model IdempotencyKey {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  tenantId       String    @db.Uuid
+  key            String
+  /// SHA-256 of the method, the path, and the body.
+  requestHash    String
+  responseStatus Int?
+  responseBody   Json?
+  lockedUntil    DateTime? @db.Timestamptz(3)
+  expiresAt      DateTime  @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, key])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
+}
+
+/// Insert only. A trigger refuses UPDATE and DELETE (migration `20261019000000_init`).
+/// No foreign key to `tenants`: the audit history must stay after a tenant change.
+model AuditLog {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  tenantId   String?  @db.Uuid
+  /// Who did the action, for example `api_key:<prefix>` or `cli:<operator>`.
+  actor      String
+  /// For example `instance.create`, `instance.connect`, `api_key.revoke`.
+  action     String
+  targetType String
+  targetId   String?
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
