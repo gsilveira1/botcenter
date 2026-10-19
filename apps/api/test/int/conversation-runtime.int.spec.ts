@@ -8,10 +8,7 @@ import {
 } from '@botcenter/engine/fixtures';
 import { newMessageId } from '@botcenter/whatsapp-provider/testing';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  ConversationsApiModule,
-  ConversationsWorkerModule,
-} from '../../src/conversations/conversations.module';
+import { ConversationsApiModule } from '../../src/conversations/conversations.module';
 import { conversationLockName } from '../../src/conversations/conversation-keys';
 import { TIMER_JOB_NAME } from '../../src/conversations/conversation-timers.service';
 import { InboundStoreService } from '../../src/conversations/worker/inbound-store.service';
@@ -21,7 +18,8 @@ import type { Instance } from '../../src/generated/prisma/client';
 import { inboundJobId } from '../../src/inbound/inbound-ingest.service';
 import { QueuesService } from '../../src/queues/queues.service';
 import { DistributedLockService } from '../../src/services/lock.service';
-import { FakeExternalHttp, conversationPortsModule } from '../support/conversation-ports';
+import { EXTERNAL_HTTP } from '../../src/ports/external-http.port';
+import { FakeExternalHttp } from '../support/conversation-ports';
 import { TestHarness } from '../support/harness';
 import { waitFor } from '../support/wait-for';
 
@@ -36,7 +34,8 @@ beforeAll(async () => {
     minio: true,
     modules: [ConversationsApiModule],
   });
-  worker = await h.startWorker([ConversationsWorkerModule, conversationPortsModule(http)]);
+  // The root worker module has the real global EXTERNAL_HTTP port: replace it with the fake.
+  worker = await h.startWorker([], undefined, [{ provide: EXTERNAL_HTTP, useValue: http }]);
 });
 
 afterAll(async () => {

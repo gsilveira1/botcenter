@@ -343,11 +343,19 @@ export class TestHarness {
    */
   /**
    * Builds a worker process. `root` replaces the root module, for example to test the core without the
-   * handlers of the feature slices.
+   * handlers of the feature slices. `providerOverrides` replaces providers of the root, for example a
+   * global port with a fake.
    */
-  async startWorker(modules: Type[] = [], root: Type = WorkerModule): Promise<TestingModule> {
+  async startWorker(
+    modules: Type[] = [],
+    root: Type = WorkerModule,
+    providerOverrides: ReadonlyArray<{ provide: unknown; useValue: unknown }> = [],
+  ): Promise<TestingModule> {
     const env = { ...this.env, ROLE: 'worker' as const };
     let builder = Test.createTestingModule({ imports: [root, ...modules] });
+    for (const override of providerOverrides) {
+      builder = builder.overrideProvider(override.provide).useValue(override.useValue);
+    }
     builder = TestHarness.applyOverrides(
       builder,
       env,

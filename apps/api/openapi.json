@@ -91,6 +91,260 @@
         }
       }
     },
+    "/v1/bots/{id}": {
+      "get": {
+        "operationId": "Bots_get",
+        "tags": [
+          "bots"
+        ],
+        "summary": "Read a bot and its current version",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "x-required-scopes": [
+          "bots:write"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The bot with its current version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid (`VALIDATION_FAILED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key (`UNAUTHENTICATED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or instance not allowed (`SCOPE_MISSING`, `INSTANCE_NOT_ALLOWED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit of the API key (`RATE_LIMITED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (Problem Details)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "Bots_put",
+        "tags": [
+          "bots"
+        ],
+        "summary": "Create a bot or publish a new version of its definition",
+        "description": "`{id}` is a slug that the client chooses. A new version is published only when the definition changed. Open conversations stay on their version; new conversations use the new version. `instance_ids` is the full list of instances that the bot serves (an instance has at most one bot; an instance of another bot moves to this bot). A definition that is not valid gives 422 `BOT_DEFINITION_INVALID` with one error for each path.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "x-required-scopes": [
+          "bots:write"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "The same key with the same request returns the stored response for 24 h.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutBotBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The bot with its current version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid (`VALIDATION_FAILED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key (`UNAUTHENTICATED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or instance not allowed (`SCOPE_MISSING`, `INSTANCE_NOT_ALLOWED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict (`IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_IN_PROGRESS`) or state conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The definition is not valid (`BOT_DEFINITION_INVALID`, `errors` has the paths)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit of the API key (`RATE_LIMITED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (Problem Details)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/connect/{token}/events": {
       "get": {
         "operationId": "ConnectEvents_events",
@@ -139,6 +393,255 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (Problem Details)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{id}": {
+      "get": {
+        "operationId": "Conversations_get",
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Read a conversation",
+        "description": "The state, the variables, and the last 50 transitions (most recent first).",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "x-required-scopes": [
+          "bots:write"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conversation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid (`VALIDATION_FAILED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key (`UNAUTHENTICATED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or instance not allowed (`SCOPE_MISSING`, `INSTANCE_NOT_ALLOWED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit of the API key (`RATE_LIMITED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Error (Problem Details)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{id}/handoff": {
+      "post": {
+        "operationId": "Conversations_handoff",
+        "tags": [
+          "conversations"
+        ],
+        "summary": "Move a conversation to a human or give it back to the bot",
+        "description": "`human` stops the bot and removes the pending state timer. `bot` gives the conversation back to the bot and starts the timer of the current state again. A request that changes nothing returns the conversation without a new transition.",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "x-required-scopes": [
+          "bots:write"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "The same key with the same request returns the stored response for 24 h.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandoffBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The conversation after the handoff",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationResponseDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is not valid (`VALIDATION_FAILED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid API key (`UNAUTHENTICATED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Scope or instance not allowed (`SCOPE_MISSING`, `INSTANCE_NOT_ALLOWED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency conflict (`IDEMPOTENCY_KEY_REUSED`, `IDEMPOTENCY_IN_PROGRESS`) or state conflict",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit of the API key (`RATE_LIMITED`)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Limit": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "RateLimit-Remaining": {
+                "schema": {
+                  "type": "integer"
                 }
               }
             }
@@ -1912,6 +2415,50 @@
   },
   "components": {
     "schemas": {
+      "BotResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "instance_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "version",
+          "instance_ids",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
       "ConnectEvent": {
         "oneOf": [
           {
@@ -2068,6 +2615,131 @@
         ],
         "additionalProperties": false
       },
+      "ConversationResponseDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "instance_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "contact": {
+            "type": "string",
+            "pattern": "^[1-9]\\d{9,14}$"
+          },
+          "bot_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "bot_version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "state": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
+          },
+          "variables": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 1024
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            }
+          },
+          "handoff": {
+            "type": "boolean"
+          },
+          "transitions": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from_state": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "to_state": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
+                },
+                "trigger": {
+                  "type": "string",
+                  "enum": [
+                    "start",
+                    "message",
+                    "timeout",
+                    "handoff"
+                  ]
+                },
+                "at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                }
+              },
+              "required": [
+                "from_state",
+                "to_state",
+                "trigger",
+                "at"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          }
+        },
+        "required": [
+          "id",
+          "instance_id",
+          "contact",
+          "bot_id",
+          "bot_version",
+          "state",
+          "variables",
+          "handoff",
+          "transitions",
+          "created_at",
+          "updated_at"
+        ],
+        "additionalProperties": false
+      },
       "CreateInstanceBody": {
         "type": "object",
         "properties": {
@@ -2167,6 +2839,21 @@
         "required": [
           "url",
           "events"
+        ]
+      },
+      "HandoffBody": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "enum": [
+              "human",
+              "bot"
+            ]
+          }
+        },
+        "required": [
+          "to"
         ]
       },
       "InstancePageDto": {
@@ -2495,6 +3182,1102 @@
           "code"
         ],
         "additionalProperties": false
+      },
+      "PutBotBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "definition": {
+            "type": "object",
+            "properties": {
+              "initial_state": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
+              },
+              "variables": {
+                "default": {},
+                "type": "object",
+                "propertyNames": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                },
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 1024
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                }
+              },
+              "states": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "on_enter": {
+                      "default": [],
+                      "maxItems": 20,
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "send_message"
+                              },
+                              "message": {
+                                "oneOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
+                                        "const": "text"
+                                      },
+                                      "text": {
+                                        "type": "string",
+                                        "maxLength": 4096
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "text"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
+                                        "const": "media"
+                                      },
+                                      "media_type": {
+                                        "type": "string",
+                                        "enum": [
+                                          "image",
+                                          "video",
+                                          "audio",
+                                          "document"
+                                        ]
+                                      },
+                                      "media_id": {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                      },
+                                      "url": {
+                                        "type": "string",
+                                        "maxLength": 2048,
+                                        "format": "uri"
+                                      },
+                                      "caption": {
+                                        "type": "string",
+                                        "maxLength": 1024
+                                      },
+                                      "file_name": {
+                                        "type": "string",
+                                        "maxLength": 255
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "media_type"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
+                                        "const": "buttons"
+                                      },
+                                      "text": {
+                                        "type": "string",
+                                        "maxLength": 1024
+                                      },
+                                      "buttons": {
+                                        "minItems": 1,
+                                        "maxItems": 3,
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "id": {
+                                              "type": "string",
+                                              "maxLength": 256
+                                            },
+                                            "title": {
+                                              "type": "string",
+                                              "maxLength": 20
+                                            }
+                                          },
+                                          "required": [
+                                            "id",
+                                            "title"
+                                          ]
+                                        }
+                                      },
+                                      "footer": {
+                                        "type": "string",
+                                        "maxLength": 60
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "text",
+                                      "buttons"
+                                    ],
+                                    "additionalProperties": false
+                                  },
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "type": {
+                                        "type": "string",
+                                        "const": "list"
+                                      },
+                                      "text": {
+                                        "type": "string",
+                                        "maxLength": 4096
+                                      },
+                                      "button_text": {
+                                        "type": "string",
+                                        "maxLength": 20
+                                      },
+                                      "sections": {
+                                        "minItems": 1,
+                                        "maxItems": 10,
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "title": {
+                                              "type": "string",
+                                              "maxLength": 24
+                                            },
+                                            "rows": {
+                                              "minItems": 1,
+                                              "maxItems": 10,
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "id": {
+                                                    "type": "string",
+                                                    "maxLength": 200
+                                                  },
+                                                  "title": {
+                                                    "type": "string",
+                                                    "maxLength": 24
+                                                  },
+                                                  "description": {
+                                                    "type": "string",
+                                                    "maxLength": 72
+                                                  }
+                                                },
+                                                "required": [
+                                                  "id",
+                                                  "title"
+                                                ]
+                                              }
+                                            }
+                                          },
+                                          "required": [
+                                            "title",
+                                            "rows"
+                                          ]
+                                        }
+                                      }
+                                    },
+                                    "required": [
+                                      "type",
+                                      "text",
+                                      "button_text",
+                                      "sections"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "call_webhook"
+                              },
+                              "url": {
+                                "type": "string",
+                                "maxLength": 2048,
+                                "format": "uri"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "url"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "set_variable"
+                              },
+                              "name": {
+                                "type": "string",
+                                "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                              },
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "maxLength": 1024
+                                  },
+                                  {
+                                    "type": "number"
+                                  },
+                                  {
+                                    "type": "boolean"
+                                  }
+                                ]
+                              },
+                              "from": {
+                                "type": "string",
+                                "const": "message_text"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "handoff"
+                              }
+                            },
+                            "required": [
+                              "type"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      }
+                    },
+                    "transitions": {
+                      "maxItems": 50,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "condition": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "text"
+                                  },
+                                  "equals": {
+                                    "minItems": 1,
+                                    "maxItems": 50,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 1024
+                                    }
+                                  },
+                                  "case_sensitive": {
+                                    "default": false,
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "equals"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "button"
+                                  },
+                                  "id": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "id"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "regex"
+                                  },
+                                  "pattern": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 200
+                                  },
+                                  "flags": {
+                                    "default": "",
+                                    "type": "string",
+                                    "pattern": "^[imsu]*$"
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "pattern"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "external"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "maxLength": 2048,
+                                    "format": "uri"
+                                  },
+                                  "timeout_ms": {
+                                    "default": 3000,
+                                    "type": "integer",
+                                    "minimum": 100,
+                                    "maximum": 5000
+                                  },
+                                  "expect": {
+                                    "type": "object",
+                                    "properties": {
+                                      "path": {
+                                        "type": "string",
+                                        "maxLength": 256,
+                                        "pattern": "^(\\/[^/]*)*$"
+                                      },
+                                      "equals": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string",
+                                            "maxLength": 1024
+                                          },
+                                          {
+                                            "type": "number"
+                                          },
+                                          {
+                                            "type": "boolean"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "path",
+                                      "equals"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "url",
+                                  "expect"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "variable"
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                                  },
+                                  "equals": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "maxLength": 1024
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "boolean"
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "name",
+                                  "equals"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "any"
+                                  }
+                                },
+                                "required": [
+                                  "type"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "target": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
+                          },
+                          "actions": {
+                            "default": [],
+                            "maxItems": 20,
+                            "type": "array",
+                            "items": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "send_message"
+                                    },
+                                    "message": {
+                                      "oneOf": [
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string",
+                                              "const": "text"
+                                            },
+                                            "text": {
+                                              "type": "string",
+                                              "maxLength": 4096
+                                            }
+                                          },
+                                          "required": [
+                                            "type",
+                                            "text"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string",
+                                              "const": "media"
+                                            },
+                                            "media_type": {
+                                              "type": "string",
+                                              "enum": [
+                                                "image",
+                                                "video",
+                                                "audio",
+                                                "document"
+                                              ]
+                                            },
+                                            "media_id": {
+                                              "type": "string",
+                                              "format": "uuid",
+                                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                            },
+                                            "url": {
+                                              "type": "string",
+                                              "maxLength": 2048,
+                                              "format": "uri"
+                                            },
+                                            "caption": {
+                                              "type": "string",
+                                              "maxLength": 1024
+                                            },
+                                            "file_name": {
+                                              "type": "string",
+                                              "maxLength": 255
+                                            }
+                                          },
+                                          "required": [
+                                            "type",
+                                            "media_type"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string",
+                                              "const": "buttons"
+                                            },
+                                            "text": {
+                                              "type": "string",
+                                              "maxLength": 1024
+                                            },
+                                            "buttons": {
+                                              "minItems": 1,
+                                              "maxItems": 3,
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "id": {
+                                                    "type": "string",
+                                                    "maxLength": 256
+                                                  },
+                                                  "title": {
+                                                    "type": "string",
+                                                    "maxLength": 20
+                                                  }
+                                                },
+                                                "required": [
+                                                  "id",
+                                                  "title"
+                                                ]
+                                              }
+                                            },
+                                            "footer": {
+                                              "type": "string",
+                                              "maxLength": 60
+                                            }
+                                          },
+                                          "required": [
+                                            "type",
+                                            "text",
+                                            "buttons"
+                                          ],
+                                          "additionalProperties": false
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string",
+                                              "const": "list"
+                                            },
+                                            "text": {
+                                              "type": "string",
+                                              "maxLength": 4096
+                                            },
+                                            "button_text": {
+                                              "type": "string",
+                                              "maxLength": 20
+                                            },
+                                            "sections": {
+                                              "minItems": 1,
+                                              "maxItems": 10,
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "title": {
+                                                    "type": "string",
+                                                    "maxLength": 24
+                                                  },
+                                                  "rows": {
+                                                    "minItems": 1,
+                                                    "maxItems": 10,
+                                                    "type": "array",
+                                                    "items": {
+                                                      "type": "object",
+                                                      "properties": {
+                                                        "id": {
+                                                          "type": "string",
+                                                          "maxLength": 200
+                                                        },
+                                                        "title": {
+                                                          "type": "string",
+                                                          "maxLength": 24
+                                                        },
+                                                        "description": {
+                                                          "type": "string",
+                                                          "maxLength": 72
+                                                        }
+                                                      },
+                                                      "required": [
+                                                        "id",
+                                                        "title"
+                                                      ]
+                                                    }
+                                                  }
+                                                },
+                                                "required": [
+                                                  "title",
+                                                  "rows"
+                                                ]
+                                              }
+                                            }
+                                          },
+                                          "required": [
+                                            "type",
+                                            "text",
+                                            "button_text",
+                                            "sections"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "message"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "call_webhook"
+                                    },
+                                    "url": {
+                                      "type": "string",
+                                      "maxLength": 2048,
+                                      "format": "uri"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "url"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "set_variable"
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                                    },
+                                    "value": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "maxLength": 1024
+                                        },
+                                        {
+                                          "type": "number"
+                                        },
+                                        {
+                                          "type": "boolean"
+                                        }
+                                      ]
+                                    },
+                                    "from": {
+                                      "type": "string",
+                                      "const": "message_text"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "name"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "handoff"
+                                    }
+                                  },
+                                  "required": [
+                                    "type"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "condition",
+                          "target"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "timeout": {
+                      "type": "object",
+                      "properties": {
+                        "after_seconds": {
+                          "type": "integer",
+                          "minimum": 10,
+                          "maximum": 604800
+                        },
+                        "target": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$"
+                        },
+                        "actions": {
+                          "default": [],
+                          "maxItems": 20,
+                          "type": "array",
+                          "items": {
+                            "oneOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "send_message"
+                                  },
+                                  "message": {
+                                    "oneOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "type": {
+                                            "type": "string",
+                                            "const": "text"
+                                          },
+                                          "text": {
+                                            "type": "string",
+                                            "maxLength": 4096
+                                          }
+                                        },
+                                        "required": [
+                                          "type",
+                                          "text"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "type": {
+                                            "type": "string",
+                                            "const": "media"
+                                          },
+                                          "media_type": {
+                                            "type": "string",
+                                            "enum": [
+                                              "image",
+                                              "video",
+                                              "audio",
+                                              "document"
+                                            ]
+                                          },
+                                          "media_id": {
+                                            "type": "string",
+                                            "format": "uuid",
+                                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                          },
+                                          "url": {
+                                            "type": "string",
+                                            "maxLength": 2048,
+                                            "format": "uri"
+                                          },
+                                          "caption": {
+                                            "type": "string",
+                                            "maxLength": 1024
+                                          },
+                                          "file_name": {
+                                            "type": "string",
+                                            "maxLength": 255
+                                          }
+                                        },
+                                        "required": [
+                                          "type",
+                                          "media_type"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "type": {
+                                            "type": "string",
+                                            "const": "buttons"
+                                          },
+                                          "text": {
+                                            "type": "string",
+                                            "maxLength": 1024
+                                          },
+                                          "buttons": {
+                                            "minItems": 1,
+                                            "maxItems": 3,
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "id": {
+                                                  "type": "string",
+                                                  "maxLength": 256
+                                                },
+                                                "title": {
+                                                  "type": "string",
+                                                  "maxLength": 20
+                                                }
+                                              },
+                                              "required": [
+                                                "id",
+                                                "title"
+                                              ]
+                                            }
+                                          },
+                                          "footer": {
+                                            "type": "string",
+                                            "maxLength": 60
+                                          }
+                                        },
+                                        "required": [
+                                          "type",
+                                          "text",
+                                          "buttons"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "type": {
+                                            "type": "string",
+                                            "const": "list"
+                                          },
+                                          "text": {
+                                            "type": "string",
+                                            "maxLength": 4096
+                                          },
+                                          "button_text": {
+                                            "type": "string",
+                                            "maxLength": 20
+                                          },
+                                          "sections": {
+                                            "minItems": 1,
+                                            "maxItems": 10,
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "title": {
+                                                  "type": "string",
+                                                  "maxLength": 24
+                                                },
+                                                "rows": {
+                                                  "minItems": 1,
+                                                  "maxItems": 10,
+                                                  "type": "array",
+                                                  "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                      "id": {
+                                                        "type": "string",
+                                                        "maxLength": 200
+                                                      },
+                                                      "title": {
+                                                        "type": "string",
+                                                        "maxLength": 24
+                                                      },
+                                                      "description": {
+                                                        "type": "string",
+                                                        "maxLength": 72
+                                                      }
+                                                    },
+                                                    "required": [
+                                                      "id",
+                                                      "title"
+                                                    ]
+                                                  }
+                                                }
+                                              },
+                                              "required": [
+                                                "title",
+                                                "rows"
+                                              ]
+                                            }
+                                          }
+                                        },
+                                        "required": [
+                                          "type",
+                                          "text",
+                                          "button_text",
+                                          "sections"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "message"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "call_webhook"
+                                  },
+                                  "url": {
+                                    "type": "string",
+                                    "maxLength": 2048,
+                                    "format": "uri"
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "url"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "set_variable"
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"
+                                  },
+                                  "value": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "maxLength": 1024
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "boolean"
+                                      }
+                                    ]
+                                  },
+                                  "from": {
+                                    "type": "string",
+                                    "const": "message_text"
+                                  }
+                                },
+                                "required": [
+                                  "type",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "type": {
+                                    "type": "string",
+                                    "const": "handoff"
+                                  }
+                                },
+                                "required": [
+                                  "type"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "after_seconds",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "final": {
+                      "default": false,
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "transitions"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "initial_state",
+              "states"
+            ],
+            "additionalProperties": false
+          },
+          "instance_ids": {
+            "maxItems": 100,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "definition",
+          "instance_ids"
+        ]
       },
       "Readiness": {
         "type": "object",

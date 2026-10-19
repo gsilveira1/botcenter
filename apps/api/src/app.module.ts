@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ConversationsApiModule } from './conversations/conversations.module';
 import { WebhooksApiModule } from './webhooks/webhooks.module';
 import { InstancesApiModule } from './instances/instances.module';
 import { ApiCoreModule } from './core/api-core.module';
@@ -18,6 +19,7 @@ import { MessagesApiModule } from './messages/messages.module';
     MessagesApiModule,
     InstancesApiModule,
     WebhooksApiModule,
+    ConversationsApiModule,
   ],
 })
 export class AppModule {}
