@@ -23,6 +23,7 @@ const record: ConversationRecord = {
   version: 2,
   handoff: false,
   lastMenu: null,
+  timeoutsInRow: 0,
 };
 
 function build(redis: Partial<Record<'get' | 'set' | 'del' | 'eval', ReturnType<typeof vi.fn>>>) {

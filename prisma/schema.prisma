@@ -300,6 +300,8 @@ model Conversation {
   /// The fire time of the state timer of the current `version` (job `timer-<id>-v<version>`), or `null`.
   /// The step writes it in its transaction. The `sweep-inbound` job adds a lost timer job again (ARCH-08).
   timerFireAt   DateTime? @db.Timestamptz(3)
+  /// State timeouts in a row without an inbound message. At `BOT_MAX_TIMEOUTS_IN_ROW`, no timer is armed (SEC-04).
+  timeoutsInRow Int       @default(0)
   createdAt     DateTime  @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
 

@@ -53,6 +53,7 @@ function plan(overrides: Partial<StepPlan> = {}): StepPlan {
     },
     result: result(),
     lastMenu: null,
+    timeoutsInRow: 0,
     messageId: '0199a000-0000-7000-8000-000000000005',
     now: new Date(),
     ...overrides,
@@ -146,7 +147,7 @@ describe('ConversationWriter', () => {
     );
     expect(tx.conversation.updateMany).toHaveBeenCalledWith({
       where: { id: CONVERSATION, tenantId: TENANT },
-      data: { lastInboundAt: expect.any(Date) },
+      data: { lastInboundAt: expect.any(Date), timeoutsInRow: 0 },
     });
     expect(tx.conversationTransition.create).not.toHaveBeenCalled();
     expect(tx.message.updateMany).toHaveBeenCalled();
@@ -172,5 +173,15 @@ describe('ConversationWriter', () => {
       where: { id: CONVERSATION, tenantId: TENANT, version: 4 },
       data: expect.objectContaining({ timerFireAt: null }),
     });
+  });
+
+  it('writes the count of timeouts in a row of the step (SEC-04)', async () => {
+    const { writer, tx } = build();
+    const outcome = await writer.write(plan({ messageId: null, timeoutsInRow: 2 }));
+    expect(tx.conversation.updateMany).toHaveBeenCalledWith({
+      where: { id: CONVERSATION, tenantId: TENANT, version: 4 },
+      data: expect.objectContaining({ timeoutsInRow: 2 }),
+    });
+    expect(outcome.record.timeoutsInRow).toBe(2);
   });
 });

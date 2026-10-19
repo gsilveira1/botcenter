@@ -4,7 +4,9 @@ import { Prisma } from '../../generated/prisma/client';
 import { MetricsService } from '../../metrics/metrics.service';
 import type { PrismaService } from '../../prisma/prisma.service';
 import type { OutboxService } from '../../services/outbox.service';
+import type { QuotaService } from '../../rate-limit/quota.service';
 import { ConversationMetrics } from '../conversation-metrics';
+import { contactKey } from '../conversation-keys';
 import type { InboundMediaService } from './inbound-media.service';
 import { InboundStoreService } from './inbound-store.service';
 
@@ -32,7 +34,7 @@ const stored = {
   botPending: true,
 };
 
-function build(options: { existing?: boolean; handoff?: boolean } = {}) {
+function build(options: { existing?: boolean; handoff?: boolean; limited?: boolean } = {}) {
   const message = {
     findUnique: vi.fn(async () => (options.existing ? stored : null)),
     create: vi.fn(async () => stored),
@@ -50,13 +52,17 @@ function build(options: { existing?: boolean; handoff?: boolean } = {}) {
   };
   const outbox = { enqueue: vi.fn(async () => 'e1') };
   const media = { copy: vi.fn() };
+  const quota = { consume: vi.fn(async () => ({ allowed: !options.limited })) };
+  const metrics = new ConversationMetrics(new MetricsService(testEnv()));
   const service = new InboundStoreService(
+    testEnv({ BOT_INBOUND_LIMIT_PER_MINUTE: '30' }),
     { forTenant: () => scoped } as unknown as PrismaService,
     outbox as unknown as OutboxService,
     media as unknown as InboundMediaService,
-    new ConversationMetrics(new MetricsService(testEnv())),
+    metrics,
+    quota as unknown as QuotaService,
   );
-  return { service, message, outbox, media };
+  return { service, message, outbox, media, quota, metrics };
 }
 
 describe('InboundStoreService', () => {
@@ -156,5 +162,31 @@ describe('InboundStoreService', () => {
       },
       expect.any(Date),
     );
+  });
+
+  it('stores the message but does not give it to the bot above the limit of the contact (SEC-04)', async () => {
+    const { service, message, quota, metrics, outbox } = build({ limited: true });
+    await service.store(instance, event, new Date());
+    expect(quota.consume).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'bot-inbound-contact',
+        subject: `i1:${contactKey(event.from)}`,
+        window: 'minute',
+        limit: 30,
+      }),
+    );
+    expect(message.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ botPending: false }) }),
+    );
+    expect(outbox.enqueue).toHaveBeenCalled();
+    expect((await metrics.skipped.get()).values).toEqual([
+      { labels: { reason: 'rate_limited' }, value: 1 },
+    ]);
+  });
+
+  it('does not count a message that the bot does not get anyway', async () => {
+    const { service, quota } = build({ handoff: true });
+    await service.store(instance, event, new Date());
+    expect(quota.consume).not.toHaveBeenCalled();
   });
 });

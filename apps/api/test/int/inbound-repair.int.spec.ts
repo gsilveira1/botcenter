@@ -27,7 +27,10 @@ let h: TestHarness;
 let worker: TestingModule;
 
 beforeAll(async () => {
-  h = await TestHarness.start({ modules: [ConversationsApiModule] });
+  h = await TestHarness.start({
+    modules: [ConversationsApiModule],
+    env: { BOT_INBOUND_LIMIT_PER_MINUTE: '3', BOT_MAX_TIMEOUTS_IN_ROW: '2' },
+  });
   worker = await h.startWorker([], undefined, [
     { provide: EXTERNAL_HTTP, useValue: new FakeExternalHttp() },
   ]);
@@ -250,5 +253,67 @@ describe('stale hot cache with handoff (ARCH-09)', () => {
     await say(s, contact, 'a');
 
     expect(await conversationOf(s, contact)).toMatchObject({ state: 'fim', handoff: false });
+  });
+});
+
+describe('limits of the bot (SEC-04)', () => {
+  const looping: BotDefinitionInput = {
+    initial_state: 'espera',
+    states: {
+      espera: {
+        on_enter: [{ type: 'send_message', message: { type: 'text', text: 'Ainda aí?' } }],
+        transitions: [{ condition: { type: 'text', equals: ['a'] }, target: 'fim' }],
+        timeout: { after_seconds: 10, target: 'espera' },
+      },
+      fim: { transitions: [], final: true },
+    },
+  };
+
+  async function fire(conversationId: string, version: number): Promise<void> {
+    const job = await timers().getJob(timerJobId(conversationId, version));
+    expect(job).toBeDefined();
+    await job!.promote();
+    await waitFor(async () => (await job!.isCompleted()) || (await job!.isFailed()));
+  }
+
+  it('stores the messages of a contact above the limit but does not run the bot for them', async () => {
+    const s = await setup();
+    const contact = nextContact();
+    // The test needs one fixed minute window: do not start in the last seconds of a minute.
+    const late = Date.now() % 60_000;
+    if (late > 50_000) {
+      await new Promise((resolve) => setTimeout(resolve, 60_500 - late));
+    }
+    await say(s, contact, 'x');
+    await say(s, contact, 'x');
+    await say(s, contact, 'x');
+    await say(s, contact, 'a'); // the fourth message in the minute: above the limit of 3
+
+    expect(await conversationOf(s, contact)).toMatchObject({ state: 's0' });
+    const rows = await h.prisma.message.findMany({
+      where: { instanceId: s.instance.id, contact, direction: 'inbound' },
+    });
+    expect(rows).toHaveLength(4);
+    expect(rows.every((row) => !row.botPending)).toBe(true);
+  });
+
+  it('arms no timer after the last timeout in a row, and arms it again at the next message', async () => {
+    const s = await setup(looping);
+    const contact = nextContact();
+    await say(s, contact, 'Oi');
+    const started = (await conversationOf(s, contact))!;
+
+    await fire(started.id, 0);
+    expect(await conversationOf(s, contact)).toMatchObject({ version: 1, timeoutsInRow: 1 });
+    await fire(started.id, 1);
+    const stopped = (await conversationOf(s, contact))!;
+    expect(stopped).toMatchObject({ version: 2, timeoutsInRow: 2, timerFireAt: null });
+    expect(await timers().getJob(timerJobId(started.id, 2))).toBeUndefined();
+
+    await say(s, contact, 'voltei');
+    const again = (await conversationOf(s, contact))!;
+    expect(again).toMatchObject({ timeoutsInRow: 0 });
+    expect(again.timerFireAt).not.toBeNull();
+    expect(await timers().getJob(timerJobId(started.id, again.version))).toBeDefined();
   });
 });

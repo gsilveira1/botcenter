@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   EngineStateError,
   handleInbound,
@@ -6,6 +6,8 @@ import {
   startConversation,
 } from '@botcenter/engine';
 import type { EngineResult } from '@botcenter/engine';
+import { ENV } from '../../config/env';
+import type { AppEnv } from '../../config/env';
 import { getLogger } from '../../logging/logger';
 import type { TimerJob } from '../../queues/queue-names';
 import { AlertService } from '../../services/alert.service';
@@ -59,6 +61,8 @@ interface PlanInput {
   result: EngineResult;
   previousMenu: LastMenu | null;
   messageId: string | null;
+  /** State timeouts in a row after this step (SEC-04). */
+  timeoutsInRow: number;
   now: Date;
 }
 
@@ -83,8 +87,10 @@ export class ConversationConflictError extends Error {
 @Injectable()
 export class ConversationStepService {
   private readonly logger = getLogger('conversation-step');
+  private readonly maxTimeoutsInRow: number;
 
   constructor(
+    @Inject(ENV) env: AppEnv,
     private readonly loader: ConversationLoader,
     private readonly definitions: BotDefinitionsService,
     private readonly writer: ConversationWriter,
@@ -94,7 +100,9 @@ export class ConversationStepService {
     private readonly diagnostics: EngineDiagnosticsReporter,
     private readonly metrics: ConversationMetrics,
     private readonly alerts: AlertService,
-  ) {}
+  ) {
+    this.maxTimeoutsInRow = env.BOT_MAX_TIMEOUTS_IN_ROW;
+  }
 
   async applyMessage(
     instance: InstanceContext,
@@ -217,6 +225,7 @@ export class ConversationStepService {
       result,
       previousMenu: null,
       messageId: message.id,
+      timeoutsInRow: 0,
       now,
     });
   }
@@ -255,6 +264,7 @@ export class ConversationStepService {
       result,
       previousMenu: conversation.lastMenu,
       messageId: message.id,
+      timeoutsInRow: 0,
       now,
     });
   }
@@ -276,11 +286,16 @@ export class ConversationStepService {
         conversation.botId,
         conversation.botVersion,
       );
-      const result = handleTimeout(bot.definition, toSnapshot(conversation), {
-        timerState: job.state,
-        timerVersion: job.conversationVersion,
-        now,
-      });
+      const timeoutsInRow = conversation.timeoutsInRow + 1;
+      const result = this.limitTimeouts(
+        handleTimeout(bot.definition, toSnapshot(conversation), {
+          timerState: job.state,
+          timerVersion: job.conversationVersion,
+          now,
+        }),
+        timeoutsInRow,
+        conversation.id,
+      );
       this.metrics.timers.inc({ result: result.persist ? 'fired' : 'stale' });
       const plan = await this.plan({
         instance,
@@ -291,6 +306,7 @@ export class ConversationStepService {
         result,
         previousMenu: conversation.lastMenu,
         messageId: null,
+        timeoutsInRow,
         now,
       });
       return result.persist ? plan : null;
@@ -298,6 +314,26 @@ export class ConversationStepService {
       await this.dataError(error, instance, conversation.id);
       return null;
     }
+  }
+
+  /**
+   * SEC-04: a timeout can go back to its own state, so a bot can send messages for ever without a user.
+   * After `BOT_MAX_TIMEOUTS_IN_ROW` timeouts without an inbound message, the step arms no new timer.
+   */
+  private limitTimeouts(
+    result: EngineResult,
+    timeoutsInRow: number,
+    conversationId: string,
+  ): EngineResult {
+    if (!result.persist || result.timer === null || timeoutsInRow < this.maxTimeoutsInRow) {
+      return result;
+    }
+    this.metrics.timers.inc({ result: 'limit' });
+    this.logger.warn(
+      { conversation_id: conversationId, timeouts_in_row: timeoutsInRow },
+      'state timeouts in a row reached the limit; no timer is armed until the next inbound message',
+    );
+    return { ...result, timer: null };
   }
 
   private async plan(input: PlanInput): Promise<StepPlan> {
@@ -315,6 +351,7 @@ export class ConversationStepService {
       bot: input.bot,
       result: input.result,
       lastMenu: menuAfterActions(input.result.actions, input.previousMenu),
+      timeoutsInRow: input.timeoutsInRow,
       messageId: input.messageId,
       now: input.now,
     };

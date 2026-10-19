@@ -78,7 +78,8 @@ export class ConversationWriter {
 
   private async writeConversation(tx: TransactionClient, plan: StepPlan): Promise<void> {
     const { result, instance } = plan;
-    const lastInboundAt = plan.messageId === null ? {} : { lastInboundAt: plan.now };
+    const lastInboundAt =
+      plan.messageId === null ? {} : { lastInboundAt: plan.now, timeoutsInRow: 0 };
     if (!result.persist) {
       await tx.conversation.updateMany({
         where: { id: plan.conversationId, tenantId: instance.tenantId },
@@ -97,6 +98,7 @@ export class ConversationWriter {
       // ARCH-08: the timer of the new version is in the same commit, so a lost job can be repaired.
       timerFireAt: result.timer?.fireAt ?? null,
       ...lastInboundAt,
+      timeoutsInRow: plan.timeoutsInRow,
     };
     if (plan.expectedVersion === null) {
       await this.create(tx, plan, data);
