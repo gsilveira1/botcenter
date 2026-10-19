@@ -81,4 +81,20 @@ describe('loadEnv', () => {
       /EVOLUTION_SEND_TIMEOUT_MS/,
     );
   });
+
+  it('parses CONNECT_ALLOWED_ORIGINS as a list of origins and refuses a value with a path', () => {
+    expect(loadEnv(VALID_ENV).CONNECT_ALLOWED_ORIGINS).toEqual([]);
+    expect(
+      loadEnv({
+        ...VALID_ENV,
+        CONNECT_ALLOWED_ORIGINS: ' https://app.example.com , http://localhost:5173,',
+      }).CONNECT_ALLOWED_ORIGINS,
+    ).toEqual(['https://app.example.com', 'http://localhost:5173']);
+    expect(() =>
+      loadEnv({ ...VALID_ENV, CONNECT_ALLOWED_ORIGINS: 'https://app.example.com/path' }),
+    ).toThrow(/CONNECT_ALLOWED_ORIGINS/);
+    expect(() => loadEnv({ ...VALID_ENV, CONNECT_ALLOWED_ORIGINS: 'not a url' })).toThrow(
+      /CONNECT_ALLOWED_ORIGINS/,
+    );
+  });
 });

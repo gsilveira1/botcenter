@@ -30,6 +30,27 @@ const httpUrl = z.url({ protocol: /^https?$/ });
 const optional = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema.optional());
 
+/**
+ * A comma list of browser origins (`https://app.example.com`). An empty value is an empty list. Each
+ * item must be an origin: a scheme, a host, and an optional port, with no path.
+ */
+const originList = z
+  .string()
+  .default('')
+  .transform((value, context) => {
+    const items = value
+      .split(',')
+      .map((item) => item.trim())
+      .filter((item) => item !== '');
+    for (const item of items) {
+      if (!URL.canParse(item) || new URL(item).origin !== item) {
+        context.addIssue({ code: 'custom', message: 'Each item must be an origin with no path' });
+        return z.NEVER;
+      }
+    }
+    return items;
+  });
+
 export const ROLES = ['api', 'worker'] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -41,6 +62,11 @@ export const EnvSchema = z.object({
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   /** Public base URL of the API. The instances slice builds `events_url` from it. */
   PUBLIC_BASE_URL: httpUrl.default('http://localhost:3000'),
+  /**
+   * Browser origins that can open the connect event stream (`GET /v1/connect/{token}/events`). Only this
+   * route sends CORS headers. Empty (the default): no CORS header.
+   */
+  CONNECT_ALLOWED_ORIGINS: originList,
 
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   DATABASE_POOL_SIZE: positiveInt.max(100).default(10),
