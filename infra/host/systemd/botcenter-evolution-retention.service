@@ -1,0 +1,20 @@
+[Unit]
+Description=Bot Center: delete Evolution messages older than the retention
+Documentation=file:///opt/botcenter/docs/runbook.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/botcenter/backup.env
+ExecStart=/opt/botcenter/infra/host/evolution-retention.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=30m
+# The script runs as root (Docker access). The service can write only to its own directories.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/botcenter /var/cache/botcenter-restic
+PrivateTmp=true
+NoNewPrivileges=true

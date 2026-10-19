@@ -10,3 +10,7 @@ trim_trailing_whitespace = true
 
 [*.md]
 trim_trailing_whitespace = false
+
+# `caddy fmt` and `alloy fmt` write tabs.
+[{Caddyfile,*.caddy,*.alloy}]
+indent_style = tab

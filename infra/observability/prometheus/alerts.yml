@@ -1,0 +1,235 @@
+# Prometheus alert rules of Bot Center (architecture, section "Observabilidade, backup e operação").
+# Load them into Grafana Cloud (Mimir ruler) with mimirtool: docs/runbook.md, procedure "Grafana Cloud".
+# Check them:  docker run --rm -v "$PWD/infra/observability/prometheus:/r:ro" --entrypoint promtool \
+#                prom/prometheus:v3.15.0 test rules /r/alerts.test.yml
+#
+# Metrics of the application (the API agent exposes them; see docs/runbook.md, "Metrics"):
+#   botcenter_instances{status}                 gauge: instances per status
+#   botcenter_queue_delay_seconds{queue}        gauge: age of the oldest waiting job of a queue
+#   botcenter_queue_size{queue,state}           gauge: jobs per queue and state
+#   botcenter_messages_total{status}            counter: outbound messages per status
+#   botcenter_webhook_deliveries_total{result}  counter: webhook deliveries (success, failure, dead)
+#   botcenter_rate_limit_denied_total{scope}    counter: denied requests (key, instance)
+#   http_request_duration_seconds               histogram: API latency (method, route, status_code)
+# Metrics of the host: node exporter of Alloy, and the text files of infra/backup.
+# Severities: critical (act now, Discord with mention), warning (act in working hours), info.
+
+groups:
+  - name: botcenter-whatsapp
+    rules:
+      - alert: InstanceDisconnected
+        expr: sum by (host) (botcenter_instances{status="disconnected"}) > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: '{{ $value }} WhatsApp instance(s) disconnected for more than 2 minutes on {{ $labels.host }}'
+          description: 'The bots of these numbers do not send or receive. Runbook: "Incident: instance disconnected".'
+
+      - alert: InstanceLoggedOut
+        expr: sum by (host) (botcenter_instances{status="logged_out"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $value }} WhatsApp instance(s) logged out on {{ $labels.host }}'
+          description: 'The owner removed the linked device or WhatsApp ended the session. The client product must start a new connect flow. Runbook: "Incident: number banned".'
+
+  - name: botcenter-queues
+    rules:
+      - alert: OutboundQueueDelayHigh
+        expr: max by (host) (botcenter_queue_delay_seconds{queue="outbound"}) > 30
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The outbound queue delay is {{ $value | humanizeDuration }} on {{ $labels.host }}'
+          description: 'Messages wait more than 30 s before the send. This is also a trigger to scale up. Runbook: "Incident: queue backlog".'
+
+      - alert: QueueDelayHigh
+        expr: max by (host, queue) (botcenter_queue_delay_seconds{queue=~"inbound|webhooks|timers"}) > 120
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The {{ $labels.queue }} queue delay is {{ $value | humanizeDuration }} on {{ $labels.host }}'
+          description: 'Runbook: "Incident: queue backlog".'
+
+  - name: botcenter-messages
+    rules:
+      - alert: SendFailureRateHigh
+        expr: |
+          (
+            sum by (host) (increase(botcenter_messages_total{status="failed"}[10m]))
+            /
+            sum by (host) (increase(botcenter_messages_total{status=~"sent|failed"}[10m]))
+          ) > 0.05
+          and
+          sum by (host) (increase(botcenter_messages_total{status=~"sent|failed"}[10m])) >= 20
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The send failure rate is {{ $value | humanizePercentage }} in 10 minutes on {{ $labels.host }}'
+          description: 'More than 5 % of the sends failed. Check the failure reasons in the logs (service=worker). A ban can be the cause. Runbook: "Incident: number banned".'
+
+      - alert: WebhookDeliveryFailuresHigh
+        expr: |
+          (
+            sum by (host) (increase(botcenter_webhook_deliveries_total{result!="success"}[15m]))
+            /
+            sum by (host) (increase(botcenter_webhook_deliveries_total[15m]))
+          ) > 0.2
+          and
+          sum by (host) (increase(botcenter_webhook_deliveries_total[15m])) >= 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $value | humanizePercentage }} of the webhook deliveries failed in 15 minutes on {{ $labels.host }}'
+          description: 'A client endpoint does not answer 2xx. The deliveries retry (1 min to 6 h). Tell the owner of the endpoint.'
+
+      - alert: WebhookDeadLetters
+        expr: sum by (host) (increase(botcenter_webhook_deliveries_total{result="dead"}[30m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $value }} webhook deliveries went to the dead letter list on {{ $labels.host }}'
+          description: 'After 6 attempts the delivery stops. The client can redeliver with POST /v1/webhooks/deliveries/{id}/redeliver.'
+
+      - alert: RateLimitDeniedHigh
+        expr: sum by (host, scope) (rate(botcenter_rate_limit_denied_total[10m])) > 1
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: 'More than 1 request per second denied by the {{ $labels.scope }} rate limit on {{ $labels.host }}'
+          description: 'A client sends faster than its limit. Check the key or the instance limit.'
+
+  - name: botcenter-api
+    rules:
+      - alert: ApiDown
+        expr: up{job="botcenter-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Alloy cannot scrape the API on {{ $labels.host }}'
+          description: 'Check `docker compose ps` and the logs of the service api.'
+
+      - alert: WorkerDown
+        expr: up{job="botcenter-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Alloy cannot scrape the workers on {{ $labels.host }}'
+          description: 'No message is sent and no event is processed. Check the logs of the service worker.'
+
+      - alert: MetricsAbsent
+        expr: absent(up{job="botcenter-api"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Grafana Cloud gets no metric from the Bot Center host'
+          description: 'Alloy, the host, or the network is down. Check Uptime Kuma and the Hetzner console.'
+
+      - alert: ApiLatencyP95High
+        expr: |
+          histogram_quantile(0.95,
+            sum by (host, le) (rate(http_request_duration_seconds_bucket{job="botcenter-api"}[5m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The API p95 latency is {{ $value | humanizeDuration }} on {{ $labels.host }}'
+          description: 'The target is below 150 ms for POST /v1/messages. Check PostgreSQL, Redis, and the host CPU.'
+
+      - alert: ApiErrorRateHigh
+        expr: |
+          (
+            sum by (host) (rate(http_request_duration_seconds_count{job="botcenter-api", status_code=~"5.."}[5m]))
+            /
+            sum by (host) (rate(http_request_duration_seconds_count{job="botcenter-api"}[5m]))
+          ) > 0.05
+          and
+          sum by (host) (rate(http_request_duration_seconds_count{job="botcenter-api"}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: '{{ $value | humanizePercentage }} of the API responses are 5xx on {{ $labels.host }}'
+          description: 'See the logs of the service api (Problem Details with the code).'
+
+  - name: botcenter-host
+    rules:
+      - alert: HostDiskUsageHigh
+        expr: |
+          1 - (
+            node_filesystem_avail_bytes{mountpoint="/", fstype!~"tmpfs|overlay"}
+            /
+            node_filesystem_size_bytes{mountpoint="/", fstype!~"tmpfs|overlay"}
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Disk usage is {{ $value | humanizePercentage }} on {{ $labels.host }}'
+          description: 'Runbook: "Incident: disk full".'
+
+      - alert: HostCpuHigh
+        expr: 1 - avg by (host) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.7
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'CPU usage is {{ $value | humanizePercentage }} for 15 minutes on {{ $labels.host }}'
+          description: 'This is a trigger to scale up (runbook: "Scale up").'
+
+      - alert: HostMemoryHigh
+        expr: 1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Memory usage is {{ $value | humanizePercentage }} on {{ $labels.host }}'
+          description: 'This is a trigger to scale up (runbook: "Scale up"). The memory per connected instance of the Evolution API is the main cost.'
+
+  - name: botcenter-backup
+    rules:
+      - alert: BackupFailed
+        expr: botcenter_backup_last_run_success == 0
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The last backup failed on {{ $labels.host }}'
+          description: 'See journalctl -u botcenter-backup.service. Runbook: "Incident: backup failed".'
+
+      - alert: BackupMissing
+        expr: time() - botcenter_backup_last_success_timestamp_seconds > 26 * 3600
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'No successful backup for {{ $value | humanizeDuration }} on {{ $labels.host }}'
+          description: 'The daily backup did not succeed today. Check the timer: systemctl list-timers botcenter-backup.timer.'
+
+      - alert: BackupMetricsAbsent
+        expr: absent(botcenter_backup_last_success_timestamp_seconds)
+        for: 30h
+        labels:
+          severity: critical
+        annotations:
+          summary: 'No backup metric for 30 hours'
+          description: 'The backup never ran, or Alloy does not read /var/lib/botcenter/metrics.'
+
+      - alert: RestoreTestMissing
+        expr: time() - botcenter_restore_test_last_success_timestamp_seconds > 35 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'No successful restore test for {{ $value | humanizeDuration }} on {{ $labels.host }}'
+          description: 'A backup without a tested restore does not count. Run botcenter-restore-test.service.'

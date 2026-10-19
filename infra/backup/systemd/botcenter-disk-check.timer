@@ -1,0 +1,10 @@
+[Unit]
+Description=Bot Center: disk usage check every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=1m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

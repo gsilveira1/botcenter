@@ -1,0 +1,77 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommits"
+  ],
+  "baseBranchPatterns": ["develop"],
+  "timezone": "America/Sao_Paulo",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "rangeStrategy": "bump",
+  "postUpdateOptions": ["pnpmDedupe"],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "schedule": ["at any time"]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Docker images in shell scripts and workflow env values (image:tag@sha256:digest)",
+      "managerFilePatterns": ["/^infra/.+\\.sh$/", "/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "(?<depName>[a-z0-9./-]+/[a-z0-9._-]+|postgres|redis|caddy|node):(?<currentValue>[0-9A-Za-z._-]+)@(?<currentDigest>sha256:[0-9a-f]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "One pull request for all minor and patch updates of npm packages",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "npm minor and patch"
+    },
+    {
+      "description": "One pull request for the GitHub Actions",
+      "matchManagers": ["github-actions"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "One pull request for the minor and patch updates of the infrastructure images",
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "infrastructure images",
+      "matchPackageNames": ["!evoapicloud/evolution-api"]
+    },
+    {
+      "description": "Evolution API: a Baileys change can break every connection. Manual approval and a test host first (docs/runbook.md, procedure 'Update the Evolution API').",
+      "matchPackageNames": ["evoapicloud/evolution-api"],
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "evolution", "needs-test-host"],
+      "automerge": false
+    },
+    {
+      "description": "PostgreSQL and Redis: no major update (a major update needs a dump and restore)",
+      "matchPackageNames": ["postgres", "redis"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "Node 24 only (re2 and the engines field); a new major needs a note in the implementation plan",
+      "matchPackageNames": ["node", "@types/node"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "A major update of an npm package needs a note in docs/implementation-plan.md",
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["major"],
+      "labels": ["dependencies", "major"],
+      "dependencyDashboardApproval": true
+    }
+  ]
+}

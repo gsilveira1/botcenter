@@ -1,0 +1,12 @@
+{
+  "extends": "@botcenter/config/tsconfig.node.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
+  },
+  "include": ["test/**/*.ts", "*.mts"]
+}

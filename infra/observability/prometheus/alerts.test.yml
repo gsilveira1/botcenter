@@ -1,0 +1,136 @@
+# Unit tests of alerts.yml:
+#   docker run --rm -v "$PWD/infra/observability/prometheus:/r:ro" --entrypoint promtool \
+#     prom/prometheus:v3.15.0 test rules /r/alerts.test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: an instance disconnected for more than 2 minutes fires, a short drop does not
+    interval: 1m
+    input_series:
+      - series: 'botcenter_instances{status="disconnected", host="h1"}'
+        values: '0 1 1 1 1 1'
+      - series: 'botcenter_instances{status="disconnected", host="h2"}'
+        values: '0 1 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: InstanceDisconnected
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: InstanceDisconnected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: '1 WhatsApp instance(s) disconnected for more than 2 minutes on h1'
+              description: 'The bots of these numbers do not send or receive. Runbook: "Incident: instance disconnected".'
+
+  - name: the outbound queue delay above 30 s fires after 1 minute
+    interval: 1m
+    input_series:
+      - series: 'botcenter_queue_delay_seconds{queue="outbound", host="h1"}'
+        values: '5 45 50 55'
+      - series: 'botcenter_queue_delay_seconds{queue="webhooks", host="h1"}'
+        values: '500 500 500 500'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: OutboundQueueDelayHigh
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: OutboundQueueDelayHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'The outbound queue delay is 55s on h1'
+              description: 'Messages wait more than 30 s before the send. This is also a trigger to scale up. Runbook: "Incident: queue backlog".'
+
+  - name: a send failure rate above 5 % in 10 minutes fires only with enough volume
+    interval: 1m
+    input_series:
+      # 100 sends and 10 failures per minute: 9 % failures.
+      - series: 'botcenter_messages_total{status="sent", host="h1"}'
+        values: '0+100x15'
+      - series: 'botcenter_messages_total{status="failed", host="h1"}'
+        values: '0+10x15'
+      # Low volume: 1 send and 1 failure per minute (50 %, but fewer than 20 messages in 10 minutes).
+      - series: 'botcenter_messages_total{status="sent", host="h2"}'
+        values: '0+1x15'
+      - series: 'botcenter_messages_total{status="failed", host="h2"}'
+        values: '0+0.5x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: SendFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'The send failure rate is 9.091% in 10 minutes on h1'
+              description: 'More than 5 % of the sends failed. Check the failure reasons in the logs (service=worker). A ban can be the cause. Runbook: "Incident: number banned".'
+
+  - name: the disk above 80 % fires after 5 minutes
+    interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{mountpoint="/", fstype="ext4", host="h1"}'
+        values: '15x10'
+      - series: 'node_filesystem_size_bytes{mountpoint="/", fstype="ext4", host="h1"}'
+        values: '100x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: HostDiskUsageHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+              mountpoint: /
+              fstype: ext4
+            exp_annotations:
+              summary: 'Disk usage is 85% on h1'
+              description: 'Runbook: "Incident: disk full".'
+
+  - name: a backup older than 26 hours fires, a recent one does not
+    interval: 5m
+    input_series:
+      # The last success was at t=0 (Unix time 0 in the test clock). A sample each 5 minutes.
+      - series: 'botcenter_backup_last_success_timestamp_seconds{host="h1"}'
+        values: '0x400'
+    alert_rule_test:
+      - eval_time: 20h
+        alertname: BackupMissing
+        exp_alerts: []
+      - eval_time: 27h
+        alertname: BackupMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'No successful backup for 1d 3h 0m 0s on h1'
+              description: 'The daily backup did not succeed today. Check the timer: systemctl list-timers botcenter-backup.timer.'
+
+  - name: CPU above 70 % for 15 minutes fires
+    interval: 1m
+    input_series:
+      # 2 CPUs, idle 0.2 s per second each: 80 % busy.
+      - series: 'node_cpu_seconds_total{mode="idle", cpu="0", host="h1"}'
+        values: '0+12x30'
+      - series: 'node_cpu_seconds_total{mode="idle", cpu="1", host="h1"}'
+        values: '0+12x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HostCpuHigh
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: HostCpuHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: h1
+            exp_annotations:
+              summary: 'CPU usage is 80% for 15 minutes on h1'
+              description: 'This is a trigger to scale up (runbook: "Scale up").'
