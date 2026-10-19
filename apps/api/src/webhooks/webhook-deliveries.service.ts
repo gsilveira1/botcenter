@@ -36,7 +36,8 @@ export class WebhookDeliveriesService {
 
   /**
    * Sends a `dead` or `failed` delivery again: a new attempt cycle (the attempt count starts at 0) with
-   * the same event id, so the receiver can drop a duplicate. The webhook must still exist.
+   * the same event id, so the receiver can drop a duplicate. The webhook must still exist. While a worker
+   * holds the lease of an attempt, the answer is 409: else a second job could send the event at once.
    */
   async redeliver(
     auth: AuthContext,
@@ -49,6 +50,7 @@ export class WebhookDeliveriesService {
           id,
           tenantId: auth.tenantId,
           status: { in: ['dead', 'failed'] },
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: now } }],
           subscription: { deletedAt: null, active: true },
         },
         data: {
@@ -60,7 +62,7 @@ export class WebhookDeliveriesService {
         },
       });
       if (!reset) {
-        throw await this.refusal(tx, auth.tenantId, id);
+        throw await this.refusal(tx, auth.tenantId, id, now);
       }
       await this.audit.record(
         {
@@ -81,7 +83,12 @@ export class WebhookDeliveriesService {
   }
 
   /** The reason why the reset did not match: 404 (no row of this tenant) or 409 (wrong state). */
-  private async refusal(tx: TransactionClient, tenantId: string, id: string): Promise<AppError> {
+  private async refusal(
+    tx: TransactionClient,
+    tenantId: string,
+    id: string,
+    now: Date,
+  ): Promise<AppError> {
     const existing: (WebhookDelivery & { subscription: { deletedAt: Date | null } }) | null =
       await tx.webhookDelivery.findFirst({
         where: { id, tenantId },
@@ -92,6 +99,19 @@ export class WebhookDeliveriesService {
     }
     if (existing.subscription.deletedAt) {
       return new AppError('CONFLICT', 'The webhook of this delivery is deleted');
+    }
+    if (existing.leaseExpiresAt && existing.leaseExpiresAt > now) {
+      return new AppError(
+        'CONFLICT',
+        'An attempt of this delivery is in progress. Try again after it ends.',
+        {
+          headers: {
+            'Retry-After': String(
+              Math.ceil((existing.leaseExpiresAt.getTime() - now.getTime()) / 1000),
+            ),
+          },
+        },
+      );
     }
     return new AppError(
       'CONFLICT',

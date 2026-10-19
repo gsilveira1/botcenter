@@ -469,6 +469,9 @@ model WebhookDelivery {
   lastStatusCode Int?
   lastError      String?
   nextAttemptAt  DateTime?             @db.Timestamptz(3)
+  /// End of the lease of the attempt in progress (`null` when no worker holds the row). A redelivery
+  /// waits until it passes, so one event is not sent two times at once.
+  leaseExpiresAt DateTime?             @db.Timestamptz(3)
   createdAt      DateTime              @default(now()) @db.Timestamptz(3)
   updatedAt      DateTime              @updatedAt @db.Timestamptz(3)
 

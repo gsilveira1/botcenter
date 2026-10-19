@@ -88,7 +88,7 @@ export class WebhookDeliveryWorker implements OnApplicationBootstrap {
     const update = afterAttempt(delivery.attempts, result, new Date(), this.settings);
     await this.prisma.forTenant(data.tenantId).webhookDelivery.update({
       where: { id: delivery.id },
-      data: update,
+      data: { ...update, leaseExpiresAt: null },
     });
     this.metrics.webhookDeliveriesTotal.inc({ result: update.status });
     this.logOutcome(delivery, update);
@@ -108,7 +108,10 @@ export class WebhookDeliveryWorker implements OnApplicationBootstrap {
           status: { in: ['pending', 'failed'] },
           nextAttemptAt: { lte: new Date(now.getTime() + CLOCK_TOLERANCE_MS) },
         },
-        data: { nextAttemptAt: new Date(now.getTime() + DELIVERY_LEASE_MS) },
+        data: {
+          nextAttemptAt: new Date(now.getTime() + DELIVERY_LEASE_MS),
+          leaseExpiresAt: new Date(now.getTime() + DELIVERY_LEASE_MS),
+        },
         select: {
           id: true,
           tenantId: true,
@@ -184,7 +187,12 @@ export class WebhookDeliveryWorker implements OnApplicationBootstrap {
   private async stop(delivery: ClaimedDelivery): Promise<void> {
     await this.prisma.forTenant(delivery.tenantId).webhookDelivery.update({
       where: { id: delivery.id },
-      data: { status: 'dead', nextAttemptAt: null, lastError: WEBHOOK_DELETED_ERROR },
+      data: {
+        status: 'dead',
+        nextAttemptAt: null,
+        leaseExpiresAt: null,
+        lastError: WEBHOOK_DELETED_ERROR,
+      },
     });
     this.logger.info(
       { delivery_id: delivery.id },

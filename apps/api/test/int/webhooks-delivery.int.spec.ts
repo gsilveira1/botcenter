@@ -258,6 +258,35 @@ describe('outbox dispatcher and delivery worker', () => {
     expect(foreign).toBe('skipped');
   });
 
+  it('refuses a redelivery while a worker holds the lease of a failed delivery (one send only)', async () => {
+    const tenant = await h.createTenant();
+    const sub = await subscribe(tenant.id);
+    const { key } = await h.createApiKey({ tenantId: tenant.id, scopes: ['events:read'] });
+    const delivery = await insertDelivery(h.prisma, {
+      tenantId: tenant.id,
+      subscriptionId: sub.id,
+      status: 'failed',
+      attempts: 1,
+    });
+    receiver.next((_request, response) => {
+      setTimeout(() => response.writeHead(204).end(), 300);
+    });
+    const attempt = worker
+      .get(WebhookDeliveryWorker)
+      .deliver({ tenantId: tenant.id, deliveryId: delivery.id });
+    await waitFor(async () => requestsTo(sub.path).length === 1);
+
+    const redeliver = await h.inject({
+      method: 'POST',
+      url: `/v1/webhooks/deliveries/${delivery.id}/redeliver`,
+      headers: h.bearer(key),
+    });
+    expect(redeliver.statusCode).toBe(409);
+    expect(await attempt).toBe('succeeded');
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(requestsTo(sub.path)).toHaveLength(1);
+  });
+
   it('sweeps an overdue delivery without a job and delivers it', async () => {
     const tenant = await h.createTenant();
     const sub = await subscribe(tenant.id);
