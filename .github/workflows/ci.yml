@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TURBO_TELEMETRY_DISABLED: '1'
+  DO_NOT_TRACK: '1'
+  CI: 'true'
+
+jobs:
+  static:
+    name: Lint, typecheck, format, audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Format check
+        run: pnpm format:check
+      - name: Dependency audit (production dependencies, high and critical)
+        run: pnpm audit --prod --audit-level high
+
+  test:
+    name: Unit tests and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
+      - name: Unit tests
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+
+  integration:
+    name: Integration tests (Testcontainers)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    needs: [static, test]
+    env:
+      # The runner removes the containers at the end of the job.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-pnpm
+      - name: Integration tests
+        run: pnpm test:int
+
+  infra:
+    name: Infrastructure checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      SHELLCHECK_IMAGE: koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d
+      PROMETHEUS_IMAGE: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+      CADDY_IMAGE: caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af
+      ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+      ALLOY_IMAGE: grafana/alloy:v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        run: |
+          docker run --rm -v "$PWD:/mnt:ro" -w /mnt "$SHELLCHECK_IMAGE" -x -P SCRIPTDIR:infra/backup \
+            infra/host/*.sh infra/backup/*.sh infra/scripts/*.sh infra/postgres/init/*.sh infra/docker/*.sh
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo "$ACTIONLINT_IMAGE" -color
+      - name: promtool (rules and unit tests)
+        run: |
+          docker run --rm -v "$PWD/infra/observability/prometheus:/r:ro" -w /r --entrypoint promtool \
+            "$PROMETHEUS_IMAGE" check rules alerts.yml
+          docker run --rm -v "$PWD/infra/observability/prometheus:/r:ro" -w /r --entrypoint promtool \
+            "$PROMETHEUS_IMAGE" test rules alerts.test.yml
+      - name: caddy validate and fmt
+        run: |
+          docker run --rm -v "$PWD/infra/caddy:/etc/caddy:ro" -e BOTCENTER_DOMAIN=api.example.com \
+            -e CADDY_TLS=internal "$CADDY_IMAGE" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+          docker run --rm -v "$PWD/infra/caddy:/w:ro" "$CADDY_IMAGE" caddy fmt /w/Caddyfile | diff -u infra/caddy/Caddyfile -
+      - name: alloy fmt
+        run: docker run --rm -v "$PWD/infra/observability/alloy:/c:ro" "$ALLOY_IMAGE" fmt /c/config.alloy | diff -u infra/observability/alloy/config.alloy -
+      - name: Compose config (dev, prod, prod with the CX22 profile)
+        run: |
+          docker compose -f infra/compose/compose.dev.yml config --quiet
+          env_dir="$(mktemp -d)"
+          infra/scripts/gen-secrets.sh --target-dir "$env_dir" >/dev/null
+          sed -i "s#^BOTCENTER_IMAGE=.*#BOTCENTER_IMAGE=ghcr.io/example/botcenter-api:v0.0.0@sha256:$(printf '0%.0s' $(seq 64))#" "$env_dir/compose.env"
+          export BOTCENTER_ENV_DIR="$env_dir" CADDY_CLOUDFLARE_IPS_FILE="$PWD/infra/caddy/cloudflare-ips.caddy"
+          docker compose -f infra/compose/compose.prod.yml --env-file "$env_dir/compose.env" config --quiet
+          infra/scripts/compose.sh config --quiet
