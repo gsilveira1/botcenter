@@ -48,14 +48,14 @@ require_commands() {
 alert() {
   local message="[botcenter ${BACKUP_HOST_TAG:-$(hostname)}] ${SCRIPT_NAME:-script}: $1"
   log_error "$1"
-  if [[ -z "${DISCORD_WEBHOOK_URL:-}" || "${DISCORD_WEBHOOK_URL}" == "CHANGE_ME" ]]; then
-    log_error "DISCORD_WEBHOOK_URL is not set: the alert went to the log only"
+  if [[ -z "${ALERT_DISCORD_WEBHOOK_URL:-}" || "${ALERT_DISCORD_WEBHOOK_URL}" == "CHANGE_ME" ]]; then
+    log_error "ALERT_DISCORD_WEBHOOK_URL is not set: the alert went to the log only"
     return 0
   fi
   local payload
   payload="$(jq -n --arg content "${message:0:1900}" '{content: $content}')"
-  if ! curl -fsS -m 10 -H 'Content-Type: application/json' -d "$payload" "$DISCORD_WEBHOOK_URL" >/dev/null; then
-    log_error "the post to DISCORD_WEBHOOK_URL failed"
+  if ! curl -fsS -m 10 -H 'Content-Type: application/json' -d "$payload" "$ALERT_DISCORD_WEBHOOK_URL" >/dev/null; then
+    log_error "the post to ALERT_DISCORD_WEBHOOK_URL failed"
   fi
 }
 

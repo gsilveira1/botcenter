@@ -8,7 +8,7 @@
 # Each `__NAME__` token gets one value, the same in every file (for example REDIS_PASSWORD in
 # api.env, evolution.env, and redis.env). Each value is 32 random bytes:
 #   hex (64 characters)  passwords, API keys, the webhook secret, the pepper (no URL encoding needed)
-#   base64               WEBHOOK_SECRET_ENCRYPTION_KEY (the API decodes 32 bytes for AES-256-GCM)
+#   base64               DATA_ENCRYPTION_KEY (the API decodes 32 bytes for AES-256-GCM)
 # The files get mode 600 and the directory gets mode 700. The script never prints a secret.
 # `CHANGE_ME` values (domain, R2 keys, Grafana Cloud, Discord) stay; the script lists them at the end.
 #
@@ -90,7 +90,7 @@ declare -A secrets=(
   [EVOLUTION_API_KEY]="$(hex32)"
   [EVOLUTION_WEBHOOK_SECRET]="$(hex32)"
   [API_KEY_PEPPER]="$(hex32)"
-  [WEBHOOK_SECRET_ENCRYPTION_KEY]="$(base64_32)"
+  [DATA_ENCRYPTION_KEY]="$(base64_32)"
   [RESTIC_PASSWORD]="$(hex32)"
 )
 

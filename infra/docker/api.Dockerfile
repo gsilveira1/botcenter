@@ -13,7 +13,7 @@
 #
 # One image, three roles (the `ROLE` variable, read by botcenter-entrypoint.sh):
 #   ROLE=api      node dist/main.js     (HTTP server on PORT, default 3000)
-#   ROLE=worker   node dist/worker.js   (queue workers, metrics on WORKER_METRICS_PORT, default 9464)
+#   ROLE=worker   node dist/worker.js   (queue workers; /metrics and /health/live on WORKER_METRICS_PORT 9464)
 #   A command     runs as given, for example the `migrate` service of compose.prod.yml:
 #                 pnpm --filter @botcenter/api db:migrate
 #
@@ -80,6 +80,6 @@ USER node
 WORKDIR /app/apps/api
 EXPOSE 3000 9464
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
-    CMD if [ "$ROLE" = "worker" ]; then wget -q -O /dev/null "http://127.0.0.1:${WORKER_METRICS_PORT}/metrics"; \
+    CMD if [ "$ROLE" = "worker" ]; then wget -q -O /dev/null "http://127.0.0.1:${WORKER_METRICS_PORT}/health/live"; \
         else wget -q -O /dev/null "http://127.0.0.1:${PORT}/health/live"; fi || exit 1
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/botcenter-entrypoint"]

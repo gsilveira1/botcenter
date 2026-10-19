@@ -78,6 +78,10 @@
 		header_up X-Real-IP {client_ip}
 		header_up -CF-Connecting-IP
 		header_up -True-Client-IP
+		# Below KEEP_ALIVE_TIMEOUT_MS of the API (65 s): Caddy never reuses a connection that the API closed.
+		transport http {
+			keepalive 60s
+		}
 		{block}
 	}
 }
