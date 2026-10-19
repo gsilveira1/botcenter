@@ -318,6 +318,8 @@ model Conversation {
   @@unique([instanceId, contact])
   @@index([tenantId])
   @@index([botId])
+  /// `purge-conversations` reads the conversations of a tenant without activity (SEC-05).
+  @@index([tenantId, updatedAt])
   @@map("conversations")
 }
 

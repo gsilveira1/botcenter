@@ -77,6 +77,8 @@ export interface MaintenanceJob {
     | 'purge-outbox-events'
     | 'purge-media-objects'
     | 'sweep-webhook-deliveries'
+    | 'purge-conversations'
+    | 'purge-bot-webhook-calls'
     | 'check-alerts';
 }
 

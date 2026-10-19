@@ -11,6 +11,8 @@ import { MediaStorage, S3_CLIENT } from '../../src/media/media.storage';
 import { OperationalAlertsTask } from '../../src/maintenance/operational-alerts.task';
 import type { MaintenanceTaskName } from '../../src/queues/queue-names';
 import { QueuesService } from '../../src/queues/queues.service';
+import { contactKey } from '../../src/conversations/conversation-keys';
+import { redisKeys } from '../../src/redis/redis-keys';
 import { WebhooksApiModule } from '../../src/webhooks/webhooks.module';
 import { CoreWorkerRoot } from '../support/core-worker-root';
 import { TestHarness } from '../support/harness';
@@ -73,6 +75,8 @@ describe('maintenance schedulers', () => {
         'purge-outbox-events',
         'purge-raw-events',
         'purge-webhook-deliveries',
+        'purge-conversations',
+        'purge-bot-webhook-calls',
       ].sort(),
     );
     // The tests below run the tasks directly: a scheduled run must not race with them.
@@ -202,6 +206,134 @@ describe('purge tasks', () => {
       where: { id: { in: [shortOld.id, defaultTen.id, defaultOld.id] } },
     });
     expect(left.map((row) => row.id)).toEqual([defaultTen.id]);
+  });
+
+  it('deletes the conversations without activity for the retention, with their transitions, calls, and cache (SEC-05)', async () => {
+    const bot = await h.prisma.bot.create({
+      data: {
+        tenantId: shortTenant.id,
+        slug: `purge-${randomUUID().slice(0, 8)}`,
+        name: 'B',
+        currentVersion: 1,
+      },
+    });
+    const conversation = async (contact: string, updatedAt: Date, lastInboundAt: Date | null) => {
+      const row = await h.prisma.conversation.create({
+        data: {
+          tenantId: shortTenant.id,
+          instanceId: shortInstance.id,
+          contact,
+          botId: bot.id,
+          botVersion: 1,
+          state: 'inicio',
+          variables: { nome: 'Ana', peso_kg: 72.5 },
+          lastInboundAt,
+        },
+      });
+      await h.prisma.conversationTransition.create({
+        data: {
+          tenantId: shortTenant.id,
+          conversationId: row.id,
+          toState: 'inicio',
+          trigger: 'start',
+        },
+      });
+      await h.prisma.botWebhookCall.create({
+        data: {
+          tenantId: shortTenant.id,
+          botId: bot.id,
+          conversationId: row.id,
+          url: 'https://client.example.com/hook',
+          payload: { contact },
+          status: 'succeeded',
+        },
+      });
+      // `updatedAt` is set by Prisma on each write: set the old value with SQL.
+      await h.prisma
+        .$executeRaw`UPDATE "conversations" SET "updatedAt" = ${updatedAt} WHERE "id" = ${row.id}::uuid`;
+      await h.redis.set(redisKeys.conversation(shortInstance.id, contactKey(contact)), '{}');
+      return row;
+    };
+    const stale = await conversation('5511900000001', ago(10 * DAY), ago(10 * DAY));
+    const staleNoInbound = await conversation('5511900000002', ago(8 * DAY), null);
+    const recentInbound = await conversation('5511900000003', ago(10 * DAY), ago(DAY));
+    const recentUpdate = await conversation('5511900000004', ago(DAY), ago(10 * DAY));
+    const withRecentMessage = await conversation('5511900000005', ago(10 * DAY), ago(10 * DAY));
+    await h.prisma.message.create({
+      data: {
+        tenantId: shortTenant.id,
+        instanceId: shortInstance.id,
+        conversationId: withRecentMessage.id,
+        direction: 'outbound',
+        type: 'text',
+        status: 'sent',
+        contact: '5511900000005',
+        content: { type: 'text', text: 'Oi' },
+      },
+    });
+
+    const result = await task('purge-conversations').run(new Date());
+    expect(result['deleted']).toBe(2);
+    const left = await h.prisma.conversation.findMany({ where: { tenantId: shortTenant.id } });
+    expect(left.map((row) => row.id).sort()).toEqual(
+      [recentInbound.id, recentUpdate.id, withRecentMessage.id].sort(),
+    );
+    for (const gone of [stale, staleNoInbound]) {
+      expect(
+        await h.prisma.conversationTransition.count({ where: { conversationId: gone.id } }),
+      ).toBe(0);
+      expect(await h.prisma.botWebhookCall.count({ where: { conversationId: gone.id } })).toBe(0);
+      expect(
+        await h.redis.exists(redisKeys.conversation(shortInstance.id, contactKey(gone.contact))),
+      ).toBe(0);
+    }
+    expect(
+      await h.redis.exists(
+        redisKeys.conversation(shortInstance.id, contactKey(recentInbound.contact)),
+      ),
+    ).toBe(1);
+    // A second run finds nothing (idempotent).
+    expect((await task('purge-conversations').run(new Date()))['deleted']).toBe(0);
+  });
+
+  it('deletes the bot webhook calls after 30 days, or after the shorter retention of the tenant', async () => {
+    const bot = await h.prisma.bot.create({
+      data: {
+        tenantId: defaultTenant.id,
+        slug: `calls-${randomUUID().slice(0, 8)}`,
+        name: 'B',
+        currentVersion: 1,
+      },
+    });
+    const conversation = await h.prisma.conversation.create({
+      data: {
+        tenantId: defaultTenant.id,
+        instanceId: defaultInstance.id,
+        contact: '5511900000009',
+        botId: bot.id,
+        botVersion: 1,
+        state: 'inicio',
+      },
+    });
+    const call = (createdAt: Date) =>
+      h.prisma.botWebhookCall.create({
+        data: {
+          tenantId: defaultTenant.id,
+          botId: bot.id,
+          conversationId: conversation.id,
+          url: 'https://client.example.com/hook',
+          payload: {},
+          status: 'succeeded',
+          createdAt,
+        },
+      });
+    const old = await call(ago(31 * DAY));
+    const recent = await call(ago(10 * DAY));
+    await task('purge-bot-webhook-calls').run(new Date());
+    const left = await h.prisma.botWebhookCall.findMany({
+      where: { id: { in: [old.id, recent.id] } },
+    });
+    expect(left.map((row) => row.id)).toEqual([recent.id]);
   });
 
   it('deletes old media in the object storage first, keeps a row when its key fails, and alerts', async () => {
