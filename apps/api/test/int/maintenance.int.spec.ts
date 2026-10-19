@@ -391,6 +391,40 @@ describe('purge tasks', () => {
   });
 });
 
+describe('inbound media purge (ARCH-13)', () => {
+  it('deletes every inbound row after its expiry or retention, also a row without an object', async () => {
+    const tenant = await h.createTenant({ retentionDays: 7 });
+    const storage = worker.get(MediaStorage, { strict: false });
+    const s3 = worker.get<S3Client>(S3_CLIENT, { strict: false });
+    const key = () => `tenants/${tenant.id}/inbound/${randomUUID()}`;
+    const row = (objectKey: string, createdAt: Date, expiresAt: Date | null) =>
+      h.prisma.mediaObject.create({
+        data: {
+          tenantId: tenant.id,
+          key: objectKey,
+          contentType: 'audio/ogg',
+          sizeBytes: 3,
+          direction: 'inbound',
+          createdAt,
+          expiresAt,
+        },
+      });
+    const uploaded = key();
+    await s3.send(new PutObjectCommand({ Bucket: h.minio.bucket, Key: uploaded, Body: 'ogg' }));
+    // The object of `uploaded` exists; the other rows never got their object (a failed upload).
+    await row(uploaded, ago(DAY), ago(1_000));
+    await row(key(), ago(DAY), ago(1_000));
+    await row(key(), ago(8 * DAY), null);
+    const kept = await row(key(), ago(DAY), ago(-6 * DAY));
+
+    const result = await task('purge-media-objects').run(new Date());
+    expect(result['failed']).toBe(0);
+    expect(await storage.head(uploaded)).toBeNull();
+    const left = await h.prisma.mediaObject.findMany({ where: { tenantId: tenant.id } });
+    expect(left.map((media) => media.id)).toEqual([kept.id]);
+  });
+});
+
 describe('operational alerts (check-alerts)', () => {
   function titles(): string[] {
     return h.alerts.map((alert) => alert.title);
