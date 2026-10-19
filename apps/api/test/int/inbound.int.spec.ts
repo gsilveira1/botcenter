@@ -1,9 +1,6 @@
 import { Injectable, Module } from '@nestjs/common';
 import type { OnModuleInit } from '@nestjs/common';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CoreModule } from '../../src/core/core.module';
-import { WorkerCoreModule } from '../../src/core/worker-core.module';
-import { InboundWorkerModule } from '../../src/inbound/inbound.module';
 import { InboundHandlerRegistry } from '../../src/inbound/inbound-handler.registry';
 import type {
   InboundHandler,
@@ -13,6 +10,7 @@ import type {
 import { inboundJobId } from '../../src/inbound/inbound-ingest.service';
 import { QueuesService } from '../../src/queues/queues.service';
 import { evolutionInboundText, evolutionStatus } from '../support/fake-provider';
+import { CoreWorkerRoot } from '../support/core-worker-root';
 import { TestHarness } from '../support/harness';
 import { waitFor } from '../support/wait-for';
 
@@ -37,10 +35,6 @@ class RecordingMessageHandler implements InboundHandler<'message.received'>, OnM
 /** A wave 2 style worker module: it registers one inbound handler. */
 @Module({ providers: [RecordingMessageHandler] })
 class RecordingWorkerModule {}
-
-/** The worker core without the handlers of the feature slices, so `message.status` has no handler. */
-@Module({ imports: [CoreModule, WorkerCoreModule, InboundWorkerModule] })
-class CoreWorkerRoot {}
 
 let h: TestHarness;
 

@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { MaintenanceWorkerModule } from './maintenance/maintenance.module';
+import { WebhooksWorkerModule } from './webhooks/webhooks.module';
 import { InstancesWorkerModule } from './instances/instances.module';
 import { CoreModule } from './core/core.module';
 import { WorkerCoreModule } from './core/worker-core.module';
@@ -16,6 +18,8 @@ import { MessagesWorkerModule } from './messages/messages.module';
     InboundWorkerModule,
     MessagesWorkerModule,
     InstancesWorkerModule,
+    WebhooksWorkerModule,
+    MaintenanceWorkerModule,
   ],
 })
 export class WorkerModule {}

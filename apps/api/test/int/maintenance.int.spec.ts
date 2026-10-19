@@ -12,6 +12,7 @@ import { OperationalAlertsTask } from '../../src/maintenance/operational-alerts.
 import type { MaintenanceTaskName } from '../../src/queues/queue-names';
 import { QueuesService } from '../../src/queues/queues.service';
 import { WebhooksApiModule } from '../../src/webhooks/webhooks.module';
+import { CoreWorkerRoot } from '../support/core-worker-root';
 import { TestHarness } from '../support/harness';
 import { insertDelivery, messageStatusData } from '../support/webhooks';
 
@@ -38,7 +39,7 @@ beforeAll(async () => {
       { every: 3_600_000 },
       { data: { task: 'dispatch-outbox' } },
     );
-  worker = await h.startWorker([MaintenanceWorkerModule]);
+  worker = await h.startWorker([MaintenanceWorkerModule], CoreWorkerRoot);
   shortTenant = await h.createTenant({ retentionDays: 7 });
   defaultTenant = await h.createTenant();
   shortInstance = await h.createInstance(shortTenant.id);

@@ -11,6 +11,7 @@ import { AuditService } from '../../src/services/audit.service';
 import { DistributedLockService, LockNotAcquiredError } from '../../src/services/lock.service';
 import { OutboxPayloadError, OutboxService } from '../../src/services/outbox.service';
 import { TenantsService } from '../../src/services/tenants.service';
+import { CoreWorkerRoot } from '../support/core-worker-root';
 import { TestHarness } from '../support/harness';
 
 let h: TestHarness;
@@ -216,7 +217,7 @@ class MaintenanceProbeModule {}
 
 describe('WorkerFactory', () => {
   it('alerts on a job that failed its last attempt and finishes the current job on close', async () => {
-    const worker = await h.startWorker([MaintenanceProbeModule]);
+    const worker = await h.startWorker([MaintenanceProbeModule], CoreWorkerRoot);
     const queues = h.get(QueuesService);
     await queues.add('maintenance', 'probe', { task: 'purge-messages' });
     const deadline = Date.now() + 10_000;
