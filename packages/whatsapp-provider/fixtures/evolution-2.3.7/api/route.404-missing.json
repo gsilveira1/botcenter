@@ -1,0 +1,10 @@
+{
+  "status": 404,
+  "body": {
+    "status": 404,
+    "error": "Not Found",
+    "response": {
+      "message": ["Cannot GET /instance/nope"]
+    }
+  }
+}

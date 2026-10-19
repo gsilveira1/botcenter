@@ -1,0 +1,10 @@
+{
+  "status": 401,
+  "body": {
+    "status": 401,
+    "error": "Unauthorized",
+    "response": {
+      "message": "Unauthorized"
+    }
+  }
+}

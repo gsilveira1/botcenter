@@ -1,0 +1,38 @@
+{
+  "status": 201,
+  "body": {
+    "key": {
+      "id": "3EB0ABCDEF0123456789AB",
+      "remoteJid": "5511987654321@s.whatsapp.net",
+      "participant": "5511987654321@s.whatsapp.net",
+      "fromMe": true
+    },
+    "pushName": "Você",
+    "status": "PENDING",
+    "message": {
+      "viewOnceMessage": {
+        "message": {
+          "interactiveMessage": {
+            "body": {
+              "text": "*Qual plano?*"
+            },
+            "footer": {},
+            "nativeFlowMessage": {
+              "buttons": [
+                {
+                  "name": "quick_reply",
+                  "buttonParamsJson": "{\"display_text\":\"Mensal\",\"id\":\"plan_monthly\"}"
+                }
+              ],
+              "messageParamsJson": "{\"from\":\"api\",\"templateId\":\"7d0c7a4e-3c1f-4d8e-9a1b-2f3e4d5c6b7a\"}"
+            }
+          }
+        }
+      }
+    },
+    "messageType": "viewOnceMessage",
+    "messageTimestamp": 1792404000,
+    "instanceId": "381afe88-5abf-4853-b835-fedf77635d75",
+    "source": "web"
+  }
+}
