@@ -11,6 +11,8 @@ onlyBuiltDependencies:
   - esbuild
   - prisma
   - protobufjs
+  # RE2 (linear-time regular expressions) for the regex conditions of the bot engine.
+  - re2
 
 # Optional native modules of testcontainers (ssh2). The tests do not use SSH tunnels.
 ignoredBuiltDependencies:
