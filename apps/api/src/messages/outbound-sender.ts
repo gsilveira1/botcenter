@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { MessageContent } from '@botcenter/contracts';
+import type { MessageContent, MessagePriority } from '@botcenter/contracts';
 import { ProviderError } from '@botcenter/whatsapp-provider';
 import type { OutboundContent, WhatsAppProvider } from '@botcenter/whatsapp-provider';
 import type { Job } from 'bullmq';
@@ -12,10 +12,11 @@ import { MetricsService } from '../metrics/metrics.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WHATSAPP_PROVIDER } from '../provider/provider.tokens';
 import type { OutboundJob } from '../queues/queue-names';
-import { DelayedError } from '../queues/worker.factory';
+import { DelayedError, RetryLaterError } from '../queues/worker.factory';
 import { AlertService } from '../services/alert.service';
 import { MessageStatusWriter } from './message-status.writer';
 import type { StatusTarget } from './message-status.writer';
+import { OutboundOrder, orderWaitMs } from './outbound-order';
 import { RetryableSendError, decideRetry } from './retry-policy';
 import type { OutboundFailureReason } from './retry-policy';
 import { InstanceTokenBucket } from './token-bucket';
@@ -33,6 +34,8 @@ const MESSAGE_SELECT = {
   instanceId: true,
   status: true,
   contact: true,
+  priority: true,
+  seq: true,
   content: true,
   typingDelayMs: true,
   createdAt: true,
@@ -63,6 +66,8 @@ interface OutboundMessage {
   instanceId: string;
   status: string;
   contact: string;
+  priority: MessagePriority;
+  seq: bigint;
   content: unknown;
   typingDelayMs: number | null;
   createdAt: Date;
@@ -89,6 +94,8 @@ const ALERT_REASONS: ReadonlySet<OutboundFailureReason> = new Set([
 /**
  * Processes one `send` job of the `outbound` queue:
  * 1. Load the message and its instance. A message that is not `queued` is done (idempotent job).
+ *    When an older row of the same contact and priority is still `queued`, the job waits
+ *    (`RetryLaterError`, not an attempt): the sends of one contact go out in order (ARCH-02).
  * 2. Take a token from the bucket of the instance. Without a token, move the job back to the delayed set
  *    (not a failure, not an attempt) and count `botcenter_rate_limit_denied_total{scope="instance"}`.
  * 3. Send through the provider. Write `sent` or `failed`, with the `message.status` outbox event.
@@ -108,6 +115,7 @@ export class OutboundSender {
     private readonly metrics: MetricsService,
     private readonly alerts: AlertService,
     @Inject(ENV) private readonly env: AppEnv,
+    private readonly order: OutboundOrder,
   ) {
     this.sendDelay = metrics.histogram({
       name: 'botcenter_outbound_send_delay_seconds',
@@ -122,17 +130,17 @@ export class OutboundSender {
       this.logger.debug({ status: message?.status ?? null }, 'message is not queued; the job ends');
       return 'skipped';
     }
-    const target = toTarget(message);
     const blocked = blockedReason(message.instance);
     if (blocked) {
-      return this.fail(target, blocked);
+      return this.fail(message, blocked);
     }
     if (!job.data.providerMessageId) {
+      await this.waitForOlder(job, message);
       await this.takeToken(job, message);
     }
     const result = await this.deliver(job, message);
     if (result.kind === 'failed') {
-      return this.fail(target, result.reason);
+      return this.fail(message, result.reason);
     }
     return this.markSent(job, message, result.providerMessageId);
   }
@@ -151,6 +159,20 @@ export class OutboundSender {
       where: { id: data.messageId, direction: 'outbound' },
       select: MESSAGE_SELECT,
     });
+  }
+
+  /** Throws `RetryLaterError` while an older row of the same contact and priority is `queued`. */
+  private async waitForOlder(job: Job<OutboundJob>, message: OutboundMessage): Promise<void> {
+    if (!(await this.order.hasOlderQueued(message))) {
+      return;
+    }
+    const waits = job.data.orderWaits ?? 0;
+    try {
+      await job.updateData({ ...job.data, orderWaits: waits + 1 });
+    } catch (error) {
+      this.logger.warn({ err: error }, 'order wait count not kept in the job');
+    }
+    throw new RetryLaterError(orderWaitMs(waits), 'older_message_queued');
   }
 
   private async takeToken(job: Job<OutboundJob>, message: OutboundMessage): Promise<void> {
@@ -247,6 +269,7 @@ export class OutboundSender {
     const sentAt = new Date();
     await this.writer.apply(toTarget(message), { status: 'sent', providerMessageId, at: sentAt });
     this.sendDelay.observe((sentAt.getTime() - message.createdAt.getTime()) / 1000);
+    await this.order.promoteNext(message);
     return 'sent';
   }
 
@@ -259,9 +282,13 @@ export class OutboundSender {
     }
   }
 
-  private async fail(target: StatusTarget, reason: OutboundFailureReason): Promise<SendOutcome> {
-    await this.writer.apply(target, { status: 'failed', reason, at: new Date() });
+  private async fail(
+    message: OutboundMessage,
+    reason: OutboundFailureReason,
+  ): Promise<SendOutcome> {
+    await this.writer.apply(toTarget(message), { status: 'failed', reason, at: new Date() });
     this.logger.info({ reason }, 'outbound message failed');
+    await this.order.promoteNext(message);
     return 'failed';
   }
 }

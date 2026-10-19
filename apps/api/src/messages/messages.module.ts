@@ -7,6 +7,7 @@ import { MessageStatusWriter } from './message-status.writer';
 import { MessagesController } from './messages.controller';
 import { MessagesService } from './messages.service';
 import { OutboundMessagesService } from './outbound-messages.service';
+import { OutboundOrder } from './outbound-order';
 import { OutboundSender } from './outbound-sender';
 import { OutboundSweep } from './outbound-sweep';
 import { OutboundWorker } from './outbound.worker';
@@ -41,6 +42,7 @@ export class MessagesApiModule {}
   imports: [MessagesCoreModule, MediaModule],
   providers: [
     InstanceTokenBucket,
+    OutboundOrder,
     OutboundSender,
     OutboundSweep,
     OutboundWorker,

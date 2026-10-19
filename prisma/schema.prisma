@@ -353,6 +353,8 @@ model Message {
   failureReason     String?
   /// Inbound only: true until the bot step of the conversation processed the message (in order of `createdAt`).
   botPending        Boolean          @default(false)
+  /// Insert order (a sequence). Outbound sends of one contact go out in this order (rows of one transaction have the same `createdAt`).
+  seq               BigInt           @default(autoincrement())
   sentAt            DateTime?        @db.Timestamptz(3)
   deliveredAt       DateTime?        @db.Timestamptz(3)
   readAt            DateTime?        @db.Timestamptz(3)
@@ -370,6 +372,8 @@ model Message {
   @@index([conversationId])
   /// The inbound messages that wait for the bot step of their conversation.
   @@index([instanceId, contact, createdAt], map: "messages_bot_pending_idx", where: raw("\"botPending\""))
+  /// The outbound rows that wait for a send: the order of each contact and the queue limit of each instance.
+  @@index([instanceId, contact, seq], map: "messages_queued_idx", where: raw("\"status\" = 'queued'"))
   @@map("messages")
 }
 

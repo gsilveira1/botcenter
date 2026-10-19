@@ -27,6 +27,8 @@ export interface OutboundJob {
   providerMessageId?: string;
   /** Sends that ended in a timeout or a network error (the message can be on WhatsApp already). */
   ambiguousSends?: number;
+  /** Waits for an older queued row of the same contact (send order, ARCH-02). The wait grows with it. */
+  orderWaits?: number;
 }
 
 /** `outbound`, job name `sweep`: the repeatable job that enqueues `queued` messages without a job again. */

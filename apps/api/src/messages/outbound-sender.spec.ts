@@ -6,7 +6,7 @@ import { testEnv } from '../../test/support/env';
 import { MediaUnavailableError } from '../media/media.service';
 import { MetricsService } from '../metrics/metrics.service';
 import type { OutboundJob } from '../queues/queue-names';
-import { isDelayedError } from '../queues/worker.factory';
+import { RetryLaterError, isDelayedError } from '../queues/worker.factory';
 import { OutboundSender, blockedReason } from './outbound-sender';
 import type { OutboundInstance } from './outbound-sender';
 import { RetryableSendError } from './retry-policy';
@@ -34,6 +34,7 @@ interface Setup {
   bucket: { take: ReturnType<typeof vi.fn> };
   media: { toProviderContent: ReturnType<typeof vi.fn> };
   alerts: { notify: ReturnType<typeof vi.fn> };
+  order: { hasOlderQueued: ReturnType<typeof vi.fn>; promoteNext: ReturnType<typeof vi.fn> };
   metrics: MetricsService;
 }
 
@@ -47,6 +48,8 @@ async function setup(): Promise<Setup> {
     instanceId: 'i-1',
     status: 'queued',
     contact: '5511987654321',
+    priority: 'reply',
+    seq: 7n,
     content: { type: 'text', text: 'Oi' },
     typingDelayMs: 1200,
     createdAt: new Date(Date.now() - 1_000),
@@ -59,6 +62,10 @@ async function setup(): Promise<Setup> {
   const bucket = { take: vi.fn(async () => ({ allowed: true, waitMs: 0 })) };
   const media = { toProviderContent: vi.fn() };
   const alerts = { notify: vi.fn(async () => {}) };
+  const order = {
+    hasOlderQueued: vi.fn(async () => false),
+    promoteNext: vi.fn(async () => {}),
+  };
   const env = testEnv();
   const metrics = new MetricsService(env);
   const sender = new OutboundSender(
@@ -70,6 +77,7 @@ async function setup(): Promise<Setup> {
     metrics,
     alerts as never,
     env,
+    order as never,
   );
   const job = {
     data: { tenantId: 't-1', messageId: 'm-1', instanceId: 'i-1' },
@@ -80,7 +88,7 @@ async function setup(): Promise<Setup> {
       job.data = data;
     }),
   } as unknown as Job<OutboundJob>;
-  return { sender, provider, job, message, writer, bucket, media, alerts, metrics };
+  return { sender, provider, job, message, writer, bucket, media, alerts, order, metrics };
 }
 
 async function counter(metrics: MetricsService, name: string, labels: Record<string, string>) {
@@ -134,6 +142,29 @@ describe('OutboundSender', () => {
     expect(
       await counter(s.metrics, 'botcenter_rate_limit_denied_total', { scope: 'instance' }),
     ).toBe(1);
+  });
+
+  it('waits without an attempt while an older row of the contact is queued (ARCH-02)', async () => {
+    s.order.hasOlderQueued.mockResolvedValue(true);
+    const first = await s.sender.process(s.job).catch((caught: unknown) => caught);
+    expect(first).toBeInstanceOf(RetryLaterError);
+    expect((first as RetryLaterError).delayMs).toBe(1_000);
+    const second = await s.sender.process(s.job).catch((caught: unknown) => caught);
+    expect((second as RetryLaterError).delayMs).toBe(2_000);
+    expect(s.job.data.orderWaits).toBe(2);
+    expect(s.bucket.take).not.toHaveBeenCalled();
+    expect(s.provider.sent).toHaveLength(0);
+    expect(s.order.hasOlderQueued).toHaveBeenCalledWith(
+      expect.objectContaining({ contact: '5511987654321', priority: 'reply', seq: 7n }),
+    );
+  });
+
+  it('promotes the next row of the contact after a send and after a failure', async () => {
+    expect(await s.sender.process(s.job)).toBe('sent');
+    expect(s.order.promoteNext).toHaveBeenCalledTimes(1);
+    s.message['instance'] = instance({ status: 'logged_out' });
+    expect(await s.sender.process(s.job)).toBe('failed');
+    expect(s.order.promoteNext).toHaveBeenCalledTimes(2);
   });
 
   it('fails at once for an invalid recipient', async () => {
