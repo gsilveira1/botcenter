@@ -18,6 +18,8 @@ export interface ApiResponseOptions {
   schema?: ZodDto | { name: string; schema: z.ZodType };
   /** Response headers, for example `{ Location: 'URL of the resource' }`. */
   headers?: Record<string, string>;
+  /** Media type of the body. Default `application/json` (`text/event-stream` for a stream of events). */
+  contentType?: string;
 }
 
 export interface ApiResponseEntry extends ApiResponseOptions {

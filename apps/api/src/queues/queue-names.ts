@@ -5,7 +5,14 @@ import type { ProviderEvent } from '@botcenter/whatsapp-provider';
  * and ISO strings, never `Date` objects or message content that the worker can read from the database.
  * Wave 2 slices can add fields or job names here (additive edits only).
  */
-export const QUEUE_NAMES = ['outbound', 'inbound', 'webhooks', 'timers', 'maintenance'] as const;
+export const QUEUE_NAMES = [
+  'outbound',
+  'inbound',
+  'webhooks',
+  'timers',
+  'maintenance',
+  'instances',
+] as const;
 export type QueueName = (typeof QUEUE_NAMES)[number];
 
 /** `outbound`: send one message (messages slice). The job id is the message id. */
@@ -68,12 +75,21 @@ export interface MaintenanceJob {
     | 'dispatch-outbox';
 }
 
+/**
+ * `instances`: the scheduled tasks of the instances slice (job schedulers). The slice owns the only
+ * consumer of this queue, so the tasks of other slices cannot reach it.
+ */
+export interface InstancesJob {
+  task: 'monitor-connections' | 'reconcile-connections';
+}
+
 export interface JobPayloads {
   outbound: OutboundJob | OutboundSweepJob;
   inbound: InboundJob;
   webhooks: WebhookJob;
   timers: TimerJob;
   maintenance: MaintenanceJob;
+  instances: InstancesJob;
 }
 
 /** Concurrency of each queue in the worker process (environment variables). */
@@ -83,4 +99,5 @@ export const CONCURRENCY_ENV: Record<QueueName, string> = {
   webhooks: 'WORKER_CONCURRENCY_WEBHOOKS',
   timers: 'WORKER_CONCURRENCY_TIMERS',
   maintenance: 'WORKER_CONCURRENCY_MAINTENANCE',
+  instances: 'WORKER_CONCURRENCY_INSTANCES',
 };

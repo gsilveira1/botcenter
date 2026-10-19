@@ -9,6 +9,10 @@ export const redisKeys = {
   quota: (name: string, subject: string, window: string) => `bc:quota:${name}:${subject}:${window}`,
   lock: (name: string) => `bc:lock:${name}`,
   inboundDedupe: (dedupeKey: string) => `bc:dedupe:inbound:${dedupeKey}`,
+  /** The latest QR code and pairing code of an instance (connect flow). */
+  connectCodes: (instanceId: string) => `bc:connect:codes:${instanceId}`,
+  /** Pub/sub channel of the connect events of an instance (worker to the API SSE streams). */
+  connectChannel: (instanceId: string) => `bc:connect:events:${instanceId}`,
   /** Send token bucket of an instance (messages slice, Lua script). */
   outboundBucket: (instanceId: string) => `bc:bucket:instance:${instanceId}`,
 } as const;

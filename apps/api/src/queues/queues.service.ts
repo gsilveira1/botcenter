@@ -20,6 +20,8 @@ export const DEFAULT_JOB_OPTIONS: Record<QueueName, DefaultJobOptions> = {
   webhooks: { attempts: 1 },
   timers: { attempts: 3, backoff: { type: 'exponential', delay: 5_000 } },
   maintenance: { attempts: 3, backoff: { type: 'exponential', delay: 60_000 } },
+  // A scheduler adds the next run after one minute: a retry is not necessary.
+  instances: { attempts: 1 },
 };
 
 const RETENTION: DefaultJobOptions = {

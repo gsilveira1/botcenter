@@ -87,6 +87,15 @@ export const ConnectInstanceResponse = z.object({
 });
 export type ConnectInstanceResponse = z.infer<typeof ConnectInstanceResponse>;
 
+/**
+ * Response of the connect route when the instance is already connected (additive, wave 2). The API makes
+ * no connect token and answers 200 with the status.
+ */
+export const ConnectInstanceConnectedResponse = z.object({
+  status: z.literal('connected'),
+});
+export type ConnectInstanceConnectedResponse = z.infer<typeof ConnectInstanceConnectedResponse>;
+
 /** Pairing code that the user types in WhatsApp ("Linked devices"): 8 characters, no separator. */
 export const PairingCode = z.string().regex(/^[A-Z0-9]{8}$/);
 
