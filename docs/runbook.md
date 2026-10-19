@@ -18,7 +18,7 @@ Operations procedures of Bot Center, phase 1 (one host). The architecture is in 
 | `migrate.env` | `migrate` (owner role of the database) | `infra/env/migrate.env.example` |
 | `evolution.env` | Evolution API secrets | `infra/env/evolution.env.example` |
 | `postgres.env` | PostgreSQL superuser and role passwords | `infra/env/postgres.env.example` |
-| `redis.env` | Redis password | `infra/env/redis.env.example` |
+| `redis.env` | Redis passwords of the ACL users `default`, `botcenter`, `evolution`, `metrics` | `infra/env/redis.env.example` |
 | `alloy.env` | Grafana Cloud credentials | `infra/env/alloy.env.example` |
 | `backup.env` | Backup, restore test, disk check, Evolution retention | `infra/env/backup.env.example` |
 | `restic.env` | restic repository and R2 credentials | `infra/env/restic.env.example` |
@@ -86,7 +86,9 @@ The script is idempotent. Run it again after a change of `infra/host/bootstrap.s
 
    Caddy runs as uid 1000 and must read the two files through the bind mount of `/etc/botcenter/certs`. The directory stays closed for a listing. `/etc/botcenter` stays mode 700.
 6. Security > WAF: turn on the Cloudflare managed rules that the Free plan has. Add a rate limiting rule for the API host name (for example, 600 requests per minute for each IP). The API also has its own limits.
-7. Optional: SSL/TLS > Origin Server > "Authenticated Origin Pulls". Then add `client_auth` with the Cloudflare CA to the Caddyfile. This makes sure that only Cloudflare can connect, also from a Cloudflare IP of an other customer.
+7. Required (SEC-14): SSL/TLS > Origin Server > turn on "Authenticated Origin Pulls" (zone level). Cloudflare then sends its client certificate to the origin. The Caddyfile requires a client certificate of the Cloudflare origin pull CA (`infra/caddy/cloudflare-origin-pull-ca.pem`, valid to 2029-11-01). Only Cloudflare with this setting can connect, not a client of another Cloudflare account from a Cloudflare IP.
+
+   CAUTION: Turn on the setting before the first deploy. Without it, every request through Cloudflare gets a TLS error (Cloudflare shows error 525 or 526). A direct request to the origin IP also fails, by design.
 
 ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `caddy.env` and `ALLOW_HTTP=true` in `firewall.env`. Let's Encrypt then uses HTTP-01 through Cloudflare on port 80. The origin certificate is simpler and needs no open port 80.
 
@@ -95,9 +97,14 @@ ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `
 1. R2 > Create bucket `botcenter-media` (location hint: the region of the users). It stays private. The API gives pre-signed URLs with a short validity.
 2. Add a lifecycle rule to `botcenter-media`: delete objects after the longest `retentionDays` of the tenants (default 90 days). Add a rule to abort incomplete multipart uploads after 1 day.
 3. Create bucket `botcenter-backups`. Add a rule to abort incomplete multipart uploads after 1 day. Do not add a delete rule: restic removes old snapshots (`forget --prune`).
+
+   Add bucket lock rules (R2 > `botcenter-backups` > Settings > Bucket lock rules, SEC-13), each with the retention "age 35 days": prefixes `data/`, `snapshots/`, `keys/`, and the object `config`. Do not lock `index/` and `locks/`: restic deletes them during normal work. R2 then refuses to delete or overwrite a locked object, also for a token with the delete right. A thief of the host credentials cannot delete the backups of the last 35 days. Keep `BACKUP_LOCK_DAYS` in `backup.env` equal to the lock days.
+
+   CAUTION: The lock also applies to you. A snapshot cannot be deleted before 35 days. The storage cost includes these 35 days.
 4. R2 > Manage API tokens: make two tokens with "Object Read & Write", each for one bucket only.
    - Media token: `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` in `api.env`.
-   - Backup token: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `restic.env`.
+   - Backup token: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `restic.env`. R2 has no token type without the delete right; the bucket lock of step 3 is the protection.
+   - Retention token (optional): a second "Object Read & Write" token for `forget --prune`, in a separate file (for example `/etc/botcenter/restic-retention.env`, mode 600) and `RESTIC_RETENTION_ENV_FILE` in `backup.env`. Without it, `backup.sh` uses `restic.env`. The forget step keeps every snapshot of the last `BACKUP_LOCK_DAYS` days (`--keep-within`), and prune deletes only packs that no kept snapshot uses (`--max-unused unlimited`, no repack). So the retention never needs to delete a locked object.
 5. Set `S3_ENDPOINT` (`api.env`) and the host of `RESTIC_REPOSITORY` (`restic.env`) to `https://<account id>.r2.cloudflarestorage.com`.
 
 ## 5. Grafana Cloud
@@ -114,7 +121,7 @@ ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `
    Run the unit tests of the rules first: `docker run --rm -v "$PWD/infra/observability/prometheus:/r:ro" -w /r --entrypoint promtool prom/prometheus:v3.15.0 test rules alerts.test.yml`.
 4. Alerting > Contact points: add a Discord contact point with the webhook of the operations channel. Send `severity=critical` and `severity=warning` to it.
 5. Dashboards > Import: upload `infra/observability/grafana/botcenter-dashboard.json`. Select the Prometheus data source of the stack.
-6. Explore > Loki: make sure that the label `service` shows `api`, `worker`, `evolution`, and the other services.
+6. Explore > Loki: make sure that the label `service` shows `api`, `worker`, `evolution`, and the other services. Alloy reads the container logs from the journal of the host (journald log driver). On the host, `journalctl COM_DOCKER_COMPOSE_SERVICE=api -n 20` shows the same lines.
 
 ## 6. Secrets
 
@@ -126,11 +133,16 @@ ACME mode (alternative to the origin certificate): set `CADDY_TLS=<e-mail>` in `
 
    The script writes `/etc/botcenter/*.env` with mode 600. Each secret is 32 random bytes: the PostgreSQL passwords, the Redis password, the Evolution API key, the internal webhook secret, the API key pepper, the data encryption key, and the restic password. It never prints a secret. It lists the `CHANGE_ME` values that you must set.
 2. Edit each file that the script lists (`sudo -e /etc/botcenter/api.env`, and the others).
+
+   In `api.env`, set `CONNECT_ALLOWED_ORIGINS` to the origin of each client frontend that opens the connect event stream, for example `CONNECT_ALLOWED_ORIGINS=https://app.personallife.com.br`. Use a comma between two origins. Write the origin only: scheme, host, and port, with no path and no `/` at the end.
+
+   CAUTION: Without the origin of the frontend, the browser blocks the connect event stream. The user then never sees the QR code or the pairing code.
 3. Put `RESTIC_PASSWORD` of `/etc/botcenter/restic.env` in the password manager of the team.
 
    WARNING: Without `RESTIC_PASSWORD`, no backup can be restored. A lost host also loses this file.
 
 4. Make sure that the modes are correct: `sudo ls -l /etc/botcenter`. Each `.env` file must be `-rw-------` and belong to root.
+5. Make sure that `compose.env` has `BOTCENTER_JOURNAL_GID` (the number of `getent group systemd-journal`). Alloy runs as uid 473 and gets only this group, so it reads the container logs and no secret (SEC-07).
 
 Optional: SOPS and age. Keep the env files encrypted in a private infrastructure repository:
 
@@ -148,7 +160,7 @@ Optional: SOPS and age. Keep the env files encrypted in a private infrastructure
    sudo bash -c 'set -a; . /etc/botcenter/firewall.env; set +a; /opt/botcenter/infra/host/firewall-cloudflare.sh'
    ```
 
-   With `FIREWALL_BACKENDS=docker-user`, the rules are in the `DOCKER-USER` chain of the host. For a second layer, also set `hcloud` and `HCLOUD_TOKEN` (a token of the Bot Center project). The Hetzner Cloud Firewall then allows only 443 from Cloudflare, UDP 41641 (Tailscale), and ICMP.
+   With `FIREWALL_BACKENDS=docker-user`, the rules are in the `DOCKER-USER` chain of the host. The script also adds the chain `BOTCENTER-EVO`: the egress rules of the Evolution container (SEC-01). It loads `br_netfilter` and sets `net.bridge.bridge-nf-call-iptables=1`, because the traffic between two containers of one network passes `DOCKER-USER` only with this setting. For a second layer, also set `hcloud` and `HCLOUD_TOKEN` (a token of the Bot Center project). The Hetzner Cloud Firewall then allows only 443 from Cloudflare, UDP 41641 (Tailscale), and ICMP.
 3. Initialize the restic repository (one time):
 
    ```sh
@@ -169,13 +181,17 @@ Optional: SOPS and age. Keep the env files encrypted in a private infrastructure
    - `curl -s https://<api host>/health/ready` answers `{"status":"ok",...}`.
    - `curl -s -o /dev/null -w '%{http_code}' https://<api host>/metrics` answers `404`.
    - `curl -s -o /dev/null -w '%{http_code}' https://<api host>/internal/evolution/webhook` answers `404`.
+   - `curl -s -D - -o /dev/null -H 'Origin: https://app.personallife.com.br' https://<api host>/v1/connect/ct_test/events` answers `401` with the header `access-control-allow-origin: https://app.personallife.com.br`. Use the origin of `CONNECT_ALLOWED_ORIGINS`.
 9. Turn on the timers:
 
    ```sh
    sudo systemctl enable --now botcenter-backup.timer botcenter-restore-test.timer \
      botcenter-disk-check.timer botcenter-evolution-retention.timer botcenter-cloudflare-firewall.timer
+   sudo systemctl enable botcenter-firewall-boot.service
    systemctl list-timers 'botcenter-*'
    ```
+
+   `botcenter-firewall-boot.service` applies the `DOCKER-USER` rules after each boot, before `docker.service` starts. It has no network, so it uses the last Cloudflare ranges of the Caddy snippet. Set `PUBLIC_INTERFACE` in `firewall.env` (Hetzner: `eth0`).
 
 10. Run the first backup and the first restore test by hand:
 
@@ -254,13 +270,17 @@ Use a test number, never a personal number of a team member.
 ## 11. Deploy a release
 
 1. Merge `develop` into `main` and tag the release (`vX.Y.Z`). Push the tag.
-2. The `Release` workflow builds the image, pushes it to GHCR, and scans it with Trivy. Its summary shows the image with the digest and the deploy command.
+2. The `Release` workflow builds the image, scans it with Trivy, and pushes it to GHCR only when the scan passes. Then it attests the build provenance. Its summary shows the image with the digest and the deploy command.
 3. Read the migrations of the release. A migration must be backward compatible (add columns and tables; remove them in a later release), because a rollback does not revert a migration.
 4. Deploy. Use one of the two methods:
-   - Over Tailscale SSH: `sudo /opt/botcenter/infra/scripts/deploy.sh vX.Y.Z ghcr.io/<owner>/botcenter-api:vX.Y.Z@sha256:<digest>`.
-   - With the `deploy` job of the `Release` workflow (Actions > Release > Run workflow, with the tag and the image). The environment `production` needs the approval of a reviewer.
+   - Over Tailscale SSH: first verify the attestation on your computer: `gh attestation verify oci://ghcr.io/<owner>/botcenter-api:vX.Y.Z@sha256:<digest> --repo <owner>/botcenter`. Then run `sudo /opt/botcenter/infra/scripts/deploy.sh vX.Y.Z ghcr.io/<owner>/botcenter-api:vX.Y.Z@sha256:<digest>`.
+   - With the `deploy` job of the `Release` workflow (Actions > Release > Run workflow, with the tag and the image). The environment `production` needs the approval of a reviewer. The job accepts only `ghcr.io/<owner>/botcenter-api:<tag>@sha256:<digest>` and verifies the attestation.
+
+   `deploy.sh` accepts only `BOTCENTER_IMAGE_REPOSITORY` of `/etc/botcenter/compose.env` with the release tag (SEC-12). Set it once: `BOTCENTER_IMAGE_REPOSITORY=ghcr.io/<owner>/botcenter-api`.
+   CAUTION: When a release changes the Compose networks (for example the fixed subnets of `v0.1.0`), `up -d` cannot change a network that exists. Stop the stack first in a period with low traffic: `bc down` (the volumes stay), then run `deploy.sh`.
+
 5. The script stops with an alert when a health check fails. Then do a rollback: run `deploy.sh` with the previous tag and the previous image (the alert and `/etc/botcenter/compose.env.previous` have it).
-6. The workers stop with a graceful shutdown (`stop_grace_period: 30s`, `SHUTDOWN_TIMEOUT_MS=25000`): they finish the current job and return the rest to the queue.
+6. The workers stop with a graceful shutdown (`stop_grace_period: 110s`, `WORKER_SHUTDOWN_TIMEOUT_MS=100000`): they finish the current job and return the rest to the queue. The API uses `stop_grace_period: 30s` and `SHUTDOWN_TIMEOUT_MS=25000`. A deploy can take up to 2 minutes while a long job ends.
 
 ## 12. Update the Evolution API
 
@@ -307,12 +327,18 @@ A change of Baileys can break every connection. Renovate opens the update only a
 
 ### 13.4 Redis password, Evolution API key, internal webhook secret
 
+A host that has env files from before the Redis users (SEC-11): `gen-secrets.sh` does not change existing files. Add `REDIS_BOTCENTER_PASSWORD`, `REDIS_EVOLUTION_PASSWORD`, and `REDIS_METRICS_PASSWORD` (each `openssl rand -hex 32`) to the files of step 2 by hand. Redis does not start while a value is missing.
+
 1. Make a new value: `openssl rand -hex 32`.
 2. Change it in every file:
-   - Redis password: `redis.env`, `api.env` (`REDIS_URL`), `evolution.env` (`CACHE_REDIS_URI`).
+   - Redis passwords (one ACL user for each client, SEC-11):
+     - `default` (`REDIS_PASSWORD`): `redis.env` only.
+     - `botcenter` (`REDIS_BOTCENTER_PASSWORD`): `redis.env` and `api.env` (`REDIS_URL`).
+     - `evolution` (`REDIS_EVOLUTION_PASSWORD`): `redis.env` and `evolution.env` (`CACHE_REDIS_URI`).
+     - `metrics` (`REDIS_METRICS_PASSWORD`): `redis.env` and `alloy.env`.
    - Evolution API key: `evolution.env` (`AUTHENTICATION_API_KEY`) and `api.env` (`EVOLUTION_API_KEY`).
    - Internal webhook secret: `api.env` (`EVOLUTION_WEBHOOK_SECRET`).
-3. Restart: `bc up -d --force-recreate redis evolution api worker`.
+3. Restart: `bc up -d --force-recreate redis evolution api worker alloy`.
 
    CAUTION: The restart stops the queues and the WhatsApp connections for some seconds. The jobs stay in Redis (AOF).
 
@@ -382,23 +408,21 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 
 1. Check: `test -f /var/run/reboot-required && cat /var/run/reboot-required.pkgs`.
 2. If a reboot is necessary, select a period with low traffic.
-3. Reboot: `sudo reboot`. Docker starts the stack again (`restart: unless-stopped`). The firewall timer applies the `DOCKER-USER` rules 30 seconds after the boot.
+3. Reboot: `sudo reboot`. `botcenter-firewall-boot.service` applies the `DOCKER-USER` rules with the last known Cloudflare ranges before Docker starts. Docker then starts the stack again (`restart: unless-stopped`). The firewall timer gets the current ranges 30 seconds after the boot.
 
-   CAUTION: Between the start of Docker and the firewall timer, port 443 accepts every source. The Hetzner Cloud Firewall (backend `hcloud`) closes this gap.
-
-4. Make sure that `bc ps` shows every service healthy and that `sudo iptables -S DOCKER-USER` shows the jump to `BOTCENTER-CF`.
+4. Make sure that `bc ps` shows every service healthy and that `sudo iptables -S DOCKER-USER` shows the jumps to `BOTCENTER-CF` and `BOTCENTER-EVO`.
 
 ## 17. Incident procedures
 
-### 17.1 Instance disconnected (alert `InstanceDisconnected`)
+### 17.1 Instance disconnected (alerts `InstanceDisconnected`, `InstanceDisconnectedLong`)
 
-1. Find the instances: `bc exec postgres psql -U postgres -d botcenter -c "SELECT id, \"externalRef\", status, \"updatedAt\" FROM instances WHERE status IN ('disconnected','logged_out') AND \"deletedAt\" IS NULL"`.
+1. Find the instances: `bc exec postgres psql -U postgres -d botcenter -c "SELECT id, \"externalRef\", status, \"disconnectedSince\" FROM instances WHERE status IN ('connecting','disconnected') AND \"disconnectedSince\" IS NOT NULL AND \"deletedAt\" IS NULL"`. The alert counts the instances that were connected and are `connecting` or `disconnected` for more than 2 minutes (metric `botcenter_instance_incidents`).
 2. Read the Evolution log of the period: `bc logs --since 30m evolution`. Look for `connection.update` with a status code.
 3. If all instances are disconnected, the cause is the Evolution API or the network:
    - Check the outbound internet access of the Evolution API: `bc exec evolution node -e "fetch('https://web.whatsapp.com').then((r) => console.log(r.status))"`.
    - Restart the Evolution API: `bc restart evolution`. The sessions are in the database, so the instances reconnect.
    - If the instances do not reconnect after a restart, a WhatsApp change can be the cause. Read the issues of the Evolution repository. Do not delete instances.
-4. If one instance is disconnected, `disconnected` reconnects on its own. If it stays disconnected for more than 10 minutes, tell the tenant. The owner must start a new connect flow when the status is `logged_out`.
+4. If one instance is disconnected, `disconnected` reconnects on its own. If it stays disconnected for more than 10 minutes, tell the tenant. The owner must start a new connect flow when the status is `logged_out`. After 24 hours, the incident moves to `age="stale"`: the critical alert resolves and the info alert `InstanceDisconnectedLong` starts. Tell the tenant to connect the number again or to delete the instance.
 
 ### 17.2 Queue backlog (alerts `OutboundQueueDelayHigh`, `QueueDelayHigh`)
 
@@ -407,11 +431,11 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 3. If the worker is not healthy, restart it: `bc restart worker`.
 4. If the `outbound` delay grows and the failures are low, the rate limit of the instances can be the cause (a bulk send to one number). This is the expected behavior. Tell the tenant.
 5. If the Evolution API answers slowly, check its memory (`docker stats --no-stream`) and the host CPU. Do procedure 15 if a trigger occurred.
-6. If Redis refuses writes (`OOM command not allowed` in the logs), Redis is full: `noeviction` keeps the jobs. Increase `REDIS_MAXMEMORY` and the Redis memory limit, then `bc up -d redis`. Find the queue that grows.
+6. If Redis refuses writes (`OOM command not allowed` in the logs, alerts `RedisMemoryHigh` and `RedisMemoryCritical`), Redis is full: `noeviction` keeps the jobs. Increase `REDIS_MAXMEMORY` and the Redis memory limit, then `bc up -d redis`. Find the queue that grows.
 
-### 17.3 Number banned (alerts `SendFailureRateHigh`, `InstanceLoggedOut`)
+### 17.3 Number banned (alerts `SendFailureRateHigh`, `InstanceSendFailureRateHigh`, `InstanceLoggedOut`)
 
-1. Find the instance with the failures: the logs of the worker show the instance id and the failure reason.
+1. Find the instance with the failures: the alert `InstanceSendFailureRateHigh` and the panel "Send failure rate of each instance" show the instance id. The logs of the worker show the failure reason.
 2. Tell the tenant at once. A banned number cannot send. Only the owner can appeal to WhatsApp.
 3. Stop the sends to that instance: the tenant must stop its campaign. Lower the `rateLimitPerMinute` of the instance.
 4. Check the opt-in of the recipients and the volume of the tenant. The mitigations of the architecture: rate limit for each number, gradual warm-up of new numbers, typing delay, sends only to users with opt-in.
@@ -426,7 +450,7 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 
 ### 17.5 Disk full (alerts `HostDiskUsageHigh`, disk-check)
 
-1. Find the large directories: `sudo du -xh --max-depth=2 /var/lib/docker | sort -h | tail`.
+1. Find the large directories: `sudo du -xh --max-depth=2 /var/lib/docker | sort -h | tail`. Check the journal too: `journalctl --disk-usage` (limit 2 GB, `/etc/systemd/journald.conf.d/90-botcenter.conf`).
 2. Remove the old images: `sudo docker image prune -a --filter "until=168h"`.
 
    CAUTION: Do not run `docker volume prune` or `docker system prune --volumes`. They delete the PostgreSQL and Redis data.
@@ -440,23 +464,44 @@ unattended-upgrades installs the security updates but does not reboot. Do this c
 2. If the server does not answer, use the web console to read the boot messages. Reboot from the console.
 3. If the disk or the server is lost, restore the server from the Hetzner backup (daily snapshot), or make a new host and do procedure 14.
 
+### 17.7 Inbound jobs failed (alert `InboundJobsFailed`)
+
+The Evolution API got `200` for these events, so it does not send them again. Each failed job is a user message that the bot did not store or answer.
+
+1. Find the cause: `bc logs --since 1h worker | grep -i inbound`. Usual causes: PostgreSQL or Redis was not available for a long time, or a data error.
+2. Fix the cause. Make sure that `bc ps` shows `postgres`, `redis`, and `worker` healthy.
+3. Replay the events of the failed jobs with the admin CLI. The job data and the worker log show the raw event id: `bc exec api node dist/scripts/admin.js raw-events:replay --id <raw event id>`. The command queues the events again without the dedupe check. Then remove the failed jobs, or let the queue clean them.
+4. Make sure that the panel "Failed inbound jobs" goes back to 0. The alert then resolves.
+
+### 17.8 Worker not ready (alert `WorkerNotReady`)
+
+The worker process answers, but its readiness probe fails: it cannot reach PostgreSQL or Redis. No job runs.
+
+1. Read the report of the probe: `bc exec worker wget -qO- http://10.203.3.21:9464/health/ready`. Each check shows `up` or `down` and an error code.
+2. Check the dependency: `bc ps postgres redis`, then `bc logs --since 15m postgres` or `bc logs --since 15m redis`.
+3. Fix the dependency. If the dependency is healthy and the probe still fails, restart the worker: `bc restart worker`.
+
 ## 18. Reference
 
 ### 18.1 Metrics of the application
 
-The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard use these names. The API scrapes on `api:3000/metrics`; the workers on `worker:9464/metrics`. Caddy never forwards `/metrics`.
+The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard use these names. Alloy scrapes the API on `api:9465/metrics` and the workers on `worker:9464/metrics`, on the `metrics` network only. The HTTP port of the API (3000) has no `/metrics` route (SEC-01).
 
 | Metric | Type | Labels |
 | --- | --- | --- |
 | `botcenter_instances` | gauge | `status` |
+| `botcenter_instance_incidents` | gauge | `age` (`recent`: 2 minutes to 24 hours; `stale`: 24 hours or more) |
 | `botcenter_queue_delay_seconds` | gauge | `queue` |
 | `botcenter_queue_size` | gauge | `queue`, `state` |
 | `botcenter_messages_total` | counter | `status` |
-| `botcenter_webhook_deliveries_total` | counter | `result` (`success`, `failure`, `dead`) |
+| `botcenter_instance_messages_total` | counter | `instance_id`, `status` (`sent`, `failed`) |
+| `botcenter_webhook_deliveries_total` | counter | `result` (`succeeded`, `failed`, `dead`) |
+| `botcenter_bot_webhook_calls_total` | counter | `result` (`succeeded`, `failed`: a retry follows, `dead`) |
 | `botcenter_rate_limit_denied_total` | counter | `scope` (`key`, `instance`) |
+| `botcenter_worker_ready` | gauge | none (worker process: 1 when PostgreSQL and Redis answer) |
 | `http_request_duration_seconds` | histogram | `method`, `route`, `status_code` |
 
-Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_backup_last_run_success`, `botcenter_backup_last_success_timestamp_seconds`, `botcenter_backup_duration_seconds`, `botcenter_backup_dump_size_bytes{database}`, `botcenter_restore_test_last_run_success`, `botcenter_restore_test_last_success_timestamp_seconds`.
+Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_host_filesystem_size_bytes{mountpoint}` and `botcenter_host_filesystem_avail_bytes{mountpoint}` (`disk-check.sh`, every 15 minutes; Alloy has no mount of the host root), `botcenter_backup_last_run_success`, `botcenter_backup_last_success_timestamp_seconds`, `botcenter_backup_duration_seconds`, `botcenter_backup_dump_size_bytes{database}`, `botcenter_restore_test_last_run_success`, `botcenter_restore_test_last_success_timestamp_seconds`.
 
 ### 18.2 Timers
 
@@ -467,6 +512,7 @@ Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_backup_las
 | `botcenter-disk-check.timer` | every 15 minutes | `infra/backup/disk-check.sh` |
 | `botcenter-evolution-retention.timer` | daily 04:30 UTC | `infra/host/evolution-retention.sh` |
 | `botcenter-cloudflare-firewall.timer` | 30 s after boot, then every 6 hours | `infra/host/firewall-cloudflare.sh` |
+| `botcenter-firewall-boot.service` (no timer) | each boot, before `docker.service` | `infra/host/firewall-cloudflare.sh --offline` |
 
 ### 18.3 Ports
 
@@ -475,7 +521,53 @@ Host scripts (text files in `/var/lib/botcenter/metrics`): `botcenter_backup_las
 | 443 (and 80 in ACME mode) | host, Caddy | Cloudflare ranges only (`DOCKER-USER` and Hetzner Cloud Firewall) |
 | 127.0.0.1:3001 | host, Caddy to Uptime Kuma | the host only (SSH tunnel) |
 | 22 | host, sshd | `tailscale0` only (ufw) |
-| 3000 | `api` | Caddy (`edge`), Evolution webhook and Alloy (`internal`) |
-| 9464 | `worker` | Alloy (`internal`) |
+| 3000 | `api` | Caddy and Uptime Kuma (`edge`), the Evolution webhook (`internal`) |
+| 9465 | `api`, address `10.203.3.20` | Alloy (`metrics`): `/metrics` only |
+| 9464 | `worker`, address `10.203.3.21` | Alloy (`metrics`): `/metrics`, `/health/live`, `/health/ready` |
 | 8080 | `evolution` | `api` and `worker` (`internal`) |
-| 5432, 6379 | `postgres`, `redis` | the `internal` network only |
+| 5432 | `postgres` | the `internal` network only |
+| 6379 | `redis` | `internal` (users `botcenter` and `evolution`), `metrics` (Alloy, user `metrics`) |
+
+The fixed addresses are in `infra/compose/compose.prod.yml` (subnets `10.203.1.0/24` `internal`, `10.203.2.0/24` `egress`, `10.203.3.0/24` `metrics`). The chain `BOTCENTER-EVO` of `DOCKER-USER` limits the Evolution container (`10.203.1.30`, `10.203.2.30`): in the private ranges and `169.254.0.0/16`, it can connect only to PostgreSQL, Redis, and port 3000 of the API. The internet stays open.
+
+### 18.4 Settings of `api.env`
+
+`infra/env/api.env.example` lists every variable of `apps/api/src/config/env.ts` with its default value. A test of `tests/infra` fails when a variable of `env.ts` is not in the template. Compose sets `ROLE`, `PORT`, the metrics listeners, and `NODE_OPTIONS` for each service.
+
+| Variable | Default | Use |
+| --- | --- | --- |
+| `CONNECT_ALLOWED_ORIGINS` | empty | Browser origins (comma list) that can open `GET /v1/connect/{token}/events`. Required for the connect flow of a frontend. |
+| `PUBLIC_BASE_URL` | none in production | The public URL. The connect route builds `events_url` from it. |
+| `TRUST_PROXY` | `loopback,linklocal,uniquelocal` | Proxies that Fastify trusts for `X-Forwarded-For`. |
+| `BODY_LIMIT_BYTES` | `1048576` | Maximum JSON body of a request. |
+| `INTERNAL_WEBHOOK_BODY_LIMIT_BYTES` | `8388608` | Maximum body of the Evolution webhook. |
+| `KEEP_ALIVE_TIMEOUT_MS` | `65000` | Keep it above the upstream keep-alive of Caddy (60 s). |
+| `SHUTDOWN_TIMEOUT_MS` | `25000` | Graceful shutdown of the API process. Keep it below `stop_grace_period` of `api` (30 s). |
+| `WORKER_SHUTDOWN_TIMEOUT_MS` | `100000` | Graceful shutdown of the worker process (ARCH-11). It must be longer than the longest job, or the worker does not start. Keep it below `stop_grace_period` of `worker` (110 s). |
+| `S3_REQUEST_TIMEOUT_MS` | `15000` | Time limit of one object storage request (maximum 120000). |
+| `EVOLUTION_INTERACTIVE_FALLBACK` | `text` | `text` sends buttons and lists as a numbered menu; `native` sends the native messages. |
+| `EVOLUTION_REQUEST_TIMEOUT_MS` | `10000` | Time limit of a state, create, logout, delete, or ping request. |
+| `EVOLUTION_CONNECT_TIMEOUT_MS` | `20000` | Time limit of a connect request. |
+| `EVOLUTION_SEND_TIMEOUT_MS` | `30000` | Time limit of one send (plus the typing delay). |
+| `EVOLUTION_MEDIA_TIMEOUT_MS` | `60000` | Time limit of one media download. |
+| `WORKER_CONCURRENCY_OUTBOUND`, `_INBOUND`, `_WEBHOOKS` | `10` | Jobs of the queue that one worker process runs at the same time. |
+| `WORKER_CONCURRENCY_TIMERS` | `5` | The same for the `timers` queue. |
+| `WORKER_CONCURRENCY_MAINTENANCE` | `1` | The same for the `maintenance` queue (maximum 10). |
+| `WORKER_CONCURRENCY_INSTANCES` | `1` | The same for the `instances` queue (maximum 10). |
+| `OUTBOUND_BUCKET_BURST` | `3` | Size of the send token bucket of each instance (at most its rate). |
+| `OUTBOUND_WARMUP_DAYS` | `7` | Days from the first connection of a number to the full send rate. `0` or `1` turns the warm-up off. |
+| `OUTBOUND_WARMUP_START_PERCENT` | `20` | Send rate on the first day of the warm-up, in percent of the full rate. |
+| `MEDIA_UPLOAD_URL_TTL_SECONDS` | `300` | Validity of the upload URL of `POST /v1/media` (maximum 3600). Short, because the URL can be used again while it is valid. |
+| `MEDIA_READ_URL_TTL_SECONDS` | `900` | Validity of the download URL of `GET /v1/media/{id}`. |
+| `MEDIA_UPLOADS_PER_DAY` | `1000` | `POST /v1/media` calls of one tenant in one UTC day. |
+| `MEDIA_MAX_BYTES_PER_TENANT` | `5368709120` | Sum of the declared sizes of the live outbound media of one tenant (5 GiB). |
+| `OUTBOUND_MAX_QUEUED_PER_INSTANCE` | `1000` | `queued` outbound rows of one instance. Above it, `POST /v1/messages` answers 429 `QUOTA_EXCEEDED`. |
+| `OUTBOUND_QUEUED_MAX_AGE_SECONDS` | `86400` | Maximum age of a `queued` row; the sweep writes an older row as `failed` (`expired`). |
+| `OUTBOUND_MEDIA_DOWNLOAD_TIMEOUT_MS` | `20000` | Time limit of the download of a client media `url` by the worker (maximum 30000). |
+| `MEDIA_SEND_URL_TTL_SECONDS` | `900` | Validity of the download URL that the Evolution API gets for a media message. |
+| `INBOUND_MEDIA_DOWNLOAD_CONCURRENCY` | `2` | Inbound media downloads of one worker at the same time (maximum 10; about 60 MiB each). |
+| `BOT_INBOUND_LIMIT_PER_MINUTE` | `30` | Messages of one contact on one instance in one minute that the bot answers. The worker stores the others. |
+| `BOT_MAX_TIMEOUTS_IN_ROW` | `3` | State timeouts in a row without an inbound message. After the last one, no timer starts. |
+| `EXTERNAL_HTTP_ALLOW_PRIVATE` | `false` | Test and development only. The API refuses to start with `true` in production. |
+| `EXTERNAL_HTTP_MAX_RESPONSE_BYTES` | `1048576` | Maximum response body of an external HTTP call (maximum 16 MiB). |
+| `OUTBOX_DISPATCH_INTERVAL_MS` | `1000` | Pause of the outbox dispatcher when no event waits. |

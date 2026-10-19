@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Allows HTTPS (443, and 80 with --allow-http) only from the current Cloudflare IP ranges.
+# Allows HTTPS (443, and 80 with --allow-http) only from the current Cloudflare IP ranges, and limits the
+# egress of the Evolution API container (SEC-01).
 # Idempotent: each run builds the same rules from the lists. systemd runs it after each boot and
 # every 6 hours (botcenter-cloudflare-firewall.timer).
 #
 #   sudo infra/host/firewall-cloudflare.sh                         # backends from FIREWALL_BACKENDS
 #   sudo infra/host/firewall-cloudflare.sh --backends docker-user,hcloud --allow-http
 #   infra/host/firewall-cloudflare.sh --dry-run                    # prints the rules, changes nothing
+#   sudo infra/host/firewall-cloudflare.sh --offline               # boot: before docker.service
+#
+# --offline (systemd unit botcenter-firewall-boot.service, before docker.service): no network. The
+# ranges come from the last written Caddy snippet (CADDY_SNIPPET), or from the repository copy
+# (infra/caddy/cloudflare-ips.caddy). Only the docker-user backend runs. The script makes the chain
+# DOCKER-USER when Docker did not make it yet; dockerd keeps the chain and its rules at start. So port 443
+# never accepts every source after a boot. PUBLIC_INTERFACE must be set (no route exists yet).
 #
 # Backends:
 #   docker-user  iptables and ip6tables rules in the DOCKER-USER chain. Docker publishes the ports of
@@ -18,6 +26,14 @@
 #
 # The script also writes the Caddy `trusted_proxies` snippet (CADDY_SNIPPET) and reloads Caddy when
 # the ranges change.
+#
+# Evolution egress (backend docker-user, IPv4; chain BOTCENTER-EVO): the Evolution API downloads the
+# media URLs of the clients and follows redirects. From its fixed addresses (EVOLUTION_SOURCE_IPS), it
+# can connect only to EVOLUTION_ALLOWED_DESTINATIONS (PostgreSQL, Redis, the API webhook port) in the
+# private ranges. EVOLUTION_DENIED_RANGES (link-local with the metadata service, RFC 1918, CGNAT of
+# Tailscale) get REJECT. The internet stays open (WhatsApp, media). The addresses are fixed in
+# infra/compose/compose.prod.yml. Traffic between two containers of one bridge passes DOCKER-USER only
+# with net.bridge.bridge-nf-call-iptables=1, so the script loads br_netfilter and sets it.
 # Safety: when a list is empty, too short, or has a line that is not a CIDR, the script keeps the
 # current rules, sends an alert, and exits 1.
 set -euo pipefail
@@ -32,7 +48,14 @@ CF_IPS_V6_URL="${CF_IPS_V6_URL:-https://www.cloudflare.com/ips-v6}"
 BACKENDS="${FIREWALL_BACKENDS:-docker-user}"
 ALLOW_HTTP="${ALLOW_HTTP:-false}"
 DRY_RUN=false
+OFFLINE=false
+BRIDGE_FAILED=false
+REPO_SNIPPET="$SCRIPT_DIR/../caddy/cloudflare-ips.caddy"
 CHAIN=BOTCENTER-CF
+EVO_CHAIN=BOTCENTER-EVO
+EVOLUTION_SOURCE_IPS="${EVOLUTION_SOURCE_IPS-10.203.1.30,10.203.2.30}"
+EVOLUTION_ALLOWED_DESTINATIONS="${EVOLUTION_ALLOWED_DESTINATIONS-10.203.1.10:5432,10.203.1.11:6379,10.203.1.20:3000}"
+EVOLUTION_DENIED_RANGES="${EVOLUTION_DENIED_RANGES-169.254.0.0/16,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,8 +71,12 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN=true
       shift
       ;;
+    --offline)
+      OFFLINE=true
+      shift
+      ;;
     -h | --help)
-      sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,42p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -74,11 +101,17 @@ fi
 
 # fetch_ranges URL FAMILY MINIMUM : prints the validated CIDR lines.
 fetch_ranges() {
-  local url="$1" family="$2" minimum="$3" body line count=0 pattern
+  local url="$1" family="$2" minimum="$3" body
   body="$(curl -fsS -m 20 --retry 3 "$url")" || {
     log_error "cannot fetch $url"
     return 1
   }
+  validate_ranges "$url" "$family" "$minimum" <<<"$body"
+}
+
+# validate_ranges SOURCE FAMILY MINIMUM : reads CIDR lines on stdin and prints the valid lines.
+validate_ranges() {
+  local source="$1" family="$2" minimum="$3" line count=0 pattern
   if [[ "$family" == 4 ]]; then
     pattern='^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$'
   else
@@ -88,26 +121,52 @@ fetch_ranges() {
     line="${line//$'\r'/}"
     [[ -z "$line" ]] && continue
     if [[ ! "$line" =~ $pattern ]]; then
-      log_error "the line '$line' of $url is not an IPv${family} CIDR"
+      log_error "the line '$line' of $source is not an IPv${family} CIDR"
       return 1
     fi
     printf '%s\n' "$line"
     count=$((count + 1))
-  done <<<"$body"
+  done
   if ((count < minimum)); then
-    log_error "$url has only $count ranges (minimum $minimum)"
+    log_error "$source has only $count ranges (minimum $minimum)"
     return 1
   fi
 }
 
-v4="$(fetch_ranges "$CF_IPS_V4_URL" 4 10)"
-v6="$(fetch_ranges "$CF_IPS_V6_URL" 6 5)"
+# snippet_ranges FILE FAMILY : prints the ranges of one family from a `trusted_proxies static` snippet.
+snippet_ranges() {
+  local file="$1" family="$2"
+  sed -n 's/^trusted_proxies static //p' "$file" | tr ' ' '\n' | if [[ "$family" == 4 ]]; then
+    grep -v ':' || true
+  else
+    grep ':' || true
+  fi
+}
+
+if [[ "$OFFLINE" == true ]]; then
+  snippet="${CADDY_SNIPPET:-}"
+  if [[ -z "$snippet" || ! -r "$snippet" ]]; then
+    log "no readable host snippet (${snippet:-CADDY_SNIPPET not set}); use the repository copy $REPO_SNIPPET"
+    snippet="$REPO_SNIPPET"
+  fi
+  v4="$(snippet_ranges "$snippet" 4 | validate_ranges "$snippet" 4 10)"
+  v6="$(snippet_ranges "$snippet" 6 | validate_ranges "$snippet" 6 5)"
+  BACKENDS=docker-user
+else
+  v4="$(fetch_ranges "$CF_IPS_V4_URL" 4 10)"
+  v6="$(fetch_ranges "$CF_IPS_V6_URL" 6 5)"
+fi
 log "Cloudflare ranges: $(wc -l <<<"$v4") IPv4, $(wc -l <<<"$v6") IPv6; ports: ${ports[*]}"
 
-# remove_chain CMD NAME : removes every jump to the chain NAME from DOCKER-USER, then the chain.
+# remove_chain CMD NAME : removes every jump to the chain NAME from DOCKER-USER (also the jumps with a
+# source match), then the chain.
 remove_chain() {
-  local cmd="$1" name="$2"
-  while "$cmd" -D DOCKER-USER -j "$name" 2>/dev/null; do :; done
+  local cmd="$1" name="$2" rule
+  while IFS= read -r rule; do
+    [[ -n "$rule" ]] || continue
+    # shellcheck disable=SC2086 # The rule is a list of iptables arguments.
+    "$cmd" ${rule/#-A /-D }
+  done < <("$cmd" -S DOCKER-USER 2>/dev/null | grep -E -- "-j ${name}\$" || true)
   if "$cmd" -n -L "$name" >/dev/null 2>&1; then
     "$cmd" -F "$name"
     "$cmd" -X "$name"
@@ -140,14 +199,20 @@ apply_docker_user() {
   rules+=("-A $CHAIN -j RETURN")
 
   if [[ "$DRY_RUN" == true ]]; then
+    [[ "$OFFLINE" == true ]] && printf '%s %s\n' "$cmd" "-N DOCKER-USER"
     printf '%s %s\n' "$cmd" "-N $CHAIN" "$cmd" "-F $CHAIN"
     printf "$cmd %s\n" "${rules[@]}"
     printf '%s %s\n' "$cmd" "-I DOCKER-USER 1 -j $CHAIN"
     return 0
   fi
   if ! "$cmd" -n -L DOCKER-USER >/dev/null 2>&1; then
-    log_error "$cmd has no DOCKER-USER chain. Start Docker first."
-    return 1
+    if [[ "$OFFLINE" != true ]]; then
+      log_error "$cmd has no DOCKER-USER chain. Start Docker first."
+      return 1
+    fi
+    # Before docker.service: make the chain. dockerd keeps it and adds the jump from FORWARD.
+    "$cmd" -N DOCKER-USER
+    log "$cmd: made the chain DOCKER-USER before Docker"
   fi
   # Build the rules in a new chain, jump to it, remove the old chain, then rename the new chain.
   # The traffic never passes an empty or a half-built chain.
@@ -162,6 +227,90 @@ apply_docker_user() {
   remove_chain "$cmd" "$CHAIN"
   "$cmd" -E "$new" "$CHAIN"
   log "$cmd: chain $CHAIN has ${#rules[@]} rules (public interface $iface)"
+}
+
+# --- Backend: docker-user, Evolution egress (IPv4 only: the networks of the stack have no IPv6) ----
+IPV4='([0-9]{1,3}\.){3}[0-9]{1,3}'
+
+# csv_items NAME PATTERN : prints the items of the comma list in the variable NAME; stops on a bad item.
+csv_items() {
+  local name="$1" pattern="$2" item
+  local -a items
+  IFS=',' read -r -a items <<<"${!name}"
+  for item in "${items[@]}"; do
+    if [[ ! "$item" =~ ^${pattern}$ ]]; then
+      log_error "$name has a bad item: '$item'"
+      return 1
+    fi
+    printf '%s\n' "$item"
+  done
+}
+
+apply_evolution_egress() {
+  if [[ -z "$EVOLUTION_SOURCE_IPS" ]]; then
+    log_error "EVOLUTION_SOURCE_IPS is empty: the egress of the Evolution API has no limit (SEC-01)"
+    return 1
+  fi
+  local sources allowed denied item rules=()
+  sources="$(csv_items EVOLUTION_SOURCE_IPS "$IPV4")"
+  allowed="$(csv_items EVOLUTION_ALLOWED_DESTINATIONS "${IPV4}:[0-9]{1,5}")"
+  denied="$(csv_items EVOLUTION_DENIED_RANGES "${IPV4}/[0-9]{1,2}")"
+  rules+=("-A $EVO_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN")
+  while IFS= read -r item; do
+    rules+=("-A $EVO_CHAIN -d ${item%:*} -p tcp --dport ${item##*:} -j RETURN")
+  done <<<"$allowed"
+  while IFS= read -r item; do
+    rules+=("-A $EVO_CHAIN -d $item -j REJECT --reject-with icmp-admin-prohibited")
+  done <<<"$denied"
+  rules+=("-A $EVO_CHAIN -j RETURN")
+  local jumps=()
+  while IFS= read -r item; do
+    jumps+=("-I DOCKER-USER 1 -s $item -j $EVO_CHAIN")
+  done <<<"$sources"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    printf 'iptables %s\n' "-N $EVO_CHAIN" "-F $EVO_CHAIN" "${rules[@]}" "${jumps[@]}"
+    return 0
+  fi
+  local new="${EVO_CHAIN}-NEW" rule
+  remove_chain iptables "$new"
+  iptables -N "$new"
+  for rule in "${rules[@]}"; do
+    # shellcheck disable=SC2086 # The rule is a list of iptables arguments.
+    iptables ${rule/-A $EVO_CHAIN /-A $new }
+  done
+  for rule in "${jumps[@]}"; do
+    # shellcheck disable=SC2086 # The rule is a list of iptables arguments.
+    iptables ${rule/%-j $EVO_CHAIN/-j $new}
+  done
+  remove_chain iptables "$EVO_CHAIN"
+  iptables -E "$new" "$EVO_CHAIN"
+  log "iptables: chain $EVO_CHAIN has ${#rules[@]} rules for the sources $(tr '\n' ' ' <<<"$sources")"
+  # The chain also works without br_netfilter for the routed traffic (the metadata service, the other
+  # networks). Only the traffic inside one bridge needs it, so the script continues and exits 1 at the end.
+  if ! ensure_bridge_netfilter; then
+    BRIDGE_FAILED=true
+  fi
+}
+
+# The rules of BOTCENTER-EVO see the traffic between two containers of one bridge network only when
+# the bridge sends it through iptables.
+ensure_bridge_netfilter() {
+  local sysctl_file=/proc/sys/net/bridge/bridge-nf-call-iptables
+  if [[ ! -e "$sysctl_file" ]]; then
+    modprobe br_netfilter 2>/dev/null || true
+  fi
+  if [[ ! -e "$sysctl_file" ]]; then
+    log_error "the kernel module br_netfilter is not available: the Evolution egress rules do not apply inside a bridge"
+    return 1
+  fi
+  if [[ "$(<"$sysctl_file")" != 1 ]]; then
+    if ! sysctl -q -w net.bridge.bridge-nf-call-iptables=1; then
+      log_error "cannot set net.bridge.bridge-nf-call-iptables=1"
+      return 1
+    fi
+    log "set net.bridge.bridge-nf-call-iptables=1"
+  fi
 }
 
 # --- Backend: hcloud ----------------------------------------------------------------------------
@@ -238,9 +387,13 @@ IFS=',' read -r -a backend_list <<<"$BACKENDS"
 for backend in "${backend_list[@]}"; do
   case "$backend" in
     docker-user)
-      [[ "$DRY_RUN" == true ]] || require_commands iptables ip6tables ip
+      if [[ "$DRY_RUN" != true ]]; then
+        require_commands iptables ip6tables
+        [[ -n "${PUBLIC_INTERFACE:-}" ]] || require_commands ip
+      fi
       apply_docker_user iptables "$v4"
       apply_docker_user ip6tables "$v6"
+      apply_evolution_egress
       ;;
     hcloud) apply_hcloud ;;
     *)
@@ -249,5 +402,11 @@ for backend in "${backend_list[@]}"; do
       ;;
   esac
 done
-update_caddy_snippet
+if [[ "$OFFLINE" != true ]]; then
+  update_caddy_snippet
+fi
+if [[ "$BRIDGE_FAILED" == true ]]; then
+  log_error "the rules are applied, but net.bridge.bridge-nf-call-iptables is not 1 (see infra/host/bootstrap.sh)"
+  exit 1
+fi
 log "done"

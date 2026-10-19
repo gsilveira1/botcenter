@@ -126,9 +126,12 @@ describe('application routes', () => {
         expect.arrayContaining([
           'GET /health/live',
           'GET /health/ready',
-          'GET /metrics',
           'POST /internal/evolution/webhook',
         ]),
+      );
+      // SEC-01: /metrics is on the API metrics listener (API_METRICS_PORT), not on the HTTP port.
+      expect(routes.map((route) => `${route.httpMethod} ${route.path}`)).not.toContain(
+        'GET /metrics',
       );
       const withoutPolicy = routes
         .filter((route) => !route.policy)

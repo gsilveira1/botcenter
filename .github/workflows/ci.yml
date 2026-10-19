@@ -98,8 +98,10 @@ jobs:
           docker run --rm -v "$PWD/infra/caddy:/etc/caddy:ro" -e BOTCENTER_DOMAIN=api.example.com \
             -e CADDY_TLS=internal "$CADDY_IMAGE" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
           docker run --rm -v "$PWD/infra/caddy:/w:ro" "$CADDY_IMAGE" caddy fmt /w/Caddyfile | diff -u infra/caddy/Caddyfile -
-      - name: alloy fmt
-        run: docker run --rm -v "$PWD/infra/observability/alloy:/c:ro" "$ALLOY_IMAGE" fmt /c/config.alloy | diff -u infra/observability/alloy/config.alloy -
+      - name: alloy fmt and validate
+        run: |
+          docker run --rm -v "$PWD/infra/observability/alloy:/c:ro" "$ALLOY_IMAGE" fmt /c/config.alloy | diff -u infra/observability/alloy/config.alloy -
+          docker run --rm -v "$PWD/infra/observability/alloy:/c:ro" "$ALLOY_IMAGE" validate /c/config.alloy
       - name: Compose config (dev, prod, prod with the CX22 profile)
         run: |
           docker compose -f infra/compose/compose.dev.yml config --quiet

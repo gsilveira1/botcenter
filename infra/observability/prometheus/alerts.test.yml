@@ -7,15 +7,24 @@ rule_files:
 evaluation_interval: 1m
 
 tests:
-  - name: an instance disconnected for more than 2 minutes fires, a short drop does not
+  # ARCH-15: the API exports the incidents (connecting or disconnected after a connection, older than
+  # 2 minutes). Evolution reports a lost connection as `connecting`, so the status gauge is not enough.
+  - name: a recent instance incident fires at once, a stale incident (24 h or more) is info only
     interval: 1m
     input_series:
-      - series: 'botcenter_instances{status="disconnected", host="h1"}'
-        values: '0 1 1 1 1 1'
-      - series: 'botcenter_instances{status="disconnected", host="h2"}'
-        values: '0 1 0 0 0 0'
+      - series: 'botcenter_instance_incidents{age="recent", host="h1", role="api"}'
+        values: '0 0 1 1 1 1'
+      - series: 'botcenter_instance_incidents{age="stale", host="h1", role="api"}'
+        values: '0x5'
+      - series: 'botcenter_instance_incidents{age="recent", host="h2", role="api"}'
+        values: '0x5'
+      - series: 'botcenter_instance_incidents{age="stale", host="h2", role="api"}'
+        values: '2x70'
+      # The status gauge alone must not fire (a parked number stays `disconnected` for ever).
+      - series: 'botcenter_instances{status="disconnected", host="h2", role="api"}'
+        values: '2x70'
     alert_rule_test:
-      - eval_time: 2m
+      - eval_time: 1m
         alertname: InstanceDisconnected
         exp_alerts: []
       - eval_time: 4m
@@ -27,6 +36,15 @@ tests:
             exp_annotations:
               summary: '1 WhatsApp instance(s) disconnected for more than 2 minutes on h1'
               description: 'The bots of these numbers do not send or receive. Runbook: "Incident: instance disconnected".'
+      - eval_time: 70m
+        alertname: InstanceDisconnectedLong
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              host: h2
+            exp_annotations:
+              summary: '2 WhatsApp instance(s) disconnected for more than 24 hours on h2'
+              description: 'The owner did not connect these numbers again. Tell the tenant, or delete the instances. Runbook: "Incident: instance disconnected".'
 
   - name: the outbound queue delay above 30 s fires after 1 minute
     interval: 1m
@@ -76,9 +94,9 @@ tests:
   - name: the disk above 80 % fires after 5 minutes
     interval: 1m
     input_series:
-      - series: 'node_filesystem_avail_bytes{mountpoint="/", fstype="ext4", host="h1"}'
+      - series: 'botcenter_host_filesystem_avail_bytes{mountpoint="/", host="h1"}'
         values: '15x10'
-      - series: 'node_filesystem_size_bytes{mountpoint="/", fstype="ext4", host="h1"}'
+      - series: 'botcenter_host_filesystem_size_bytes{mountpoint="/", host="h1"}'
         values: '100x10'
     alert_rule_test:
       - eval_time: 7m
@@ -88,7 +106,6 @@ tests:
               severity: critical
               host: h1
               mountpoint: /
-              fstype: ext4
             exp_annotations:
               summary: 'Disk usage is 85% on h1'
               description: 'Runbook: "Incident: disk full".'
@@ -134,3 +151,161 @@ tests:
             exp_annotations:
               summary: 'CPU usage is 80% for 15 minutes on h1'
               description: 'This is a trigger to scale up (runbook: "Scale up").'
+
+  # ARCH-07: the delivery worker counts the results `succeeded`, `failed`, and `dead`.
+  - name: webhook deliveries that succeed do not fire, failed and dead deliveries above 20 % fire
+    interval: 1m
+    input_series:
+      # h1: 20 successful deliveries per minute, no failure.
+      - series: 'botcenter_webhook_deliveries_total{result="succeeded", host="h1", role="worker"}'
+        values: '0+20x30'
+      # h2: 6 successful and 4 failed or dead deliveries per minute (40 % failures).
+      - series: 'botcenter_webhook_deliveries_total{result="succeeded", host="h2", role="worker"}'
+        values: '0+6x30'
+      - series: 'botcenter_webhook_deliveries_total{result="failed", host="h2", role="worker"}'
+        values: '0+3x30'
+      - series: 'botcenter_webhook_deliveries_total{result="dead", host="h2", role="worker"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: WebhookDeliveryFailuresHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: h2
+            exp_annotations:
+              summary: '40% of the webhook deliveries failed in 15 minutes on h2'
+              description: 'A client endpoint does not answer 2xx. The deliveries retry (1 min to 6 h). Tell the owner of the endpoint.'
+
+  # ARCH-01: a failed inbound job is a user message that the bot never stored.
+  - name: a failed inbound job fires after 1 minute
+    interval: 1m
+    input_series:
+      - series: 'botcenter_queue_size{queue="inbound", state="failed", host="h1", role="api"}'
+        values: '0 0 1 1 1 1'
+      - series: 'botcenter_queue_size{queue="outbound", state="failed", host="h1", role="api"}'
+        values: '5 5 5 5 5 5'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: InboundJobsFailed
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: InboundJobsFailed
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: '1 inbound job(s) failed on h1: the bot did not process these user messages'
+              description: 'An inbound job failed all its attempts. Find the cause in the worker logs, then replay the jobs. Runbook: "Incident: inbound jobs failed".'
+
+  # ARCH-06: one banned number of many must fire, also when the global rate stays low.
+  - name: the send failure rate of one instance above 5 % fires with enough volume
+    interval: 1m
+    input_series:
+      # Instance a: 10 sends and 2 failures per minute (16.7 %).
+      - series: 'botcenter_instance_messages_total{instance_id="a", status="sent", host="h1", role="worker"}'
+        values: '0+10x20'
+      - series: 'botcenter_instance_messages_total{instance_id="a", status="failed", host="h1", role="worker"}'
+        values: '0+2x20'
+      # Instance b: 500 sends per minute, no failure (the global rate stays below 5 %).
+      - series: 'botcenter_instance_messages_total{instance_id="b", status="sent", host="h1", role="worker"}'
+        values: '0+500x20'
+      # Instance c: low volume (1 send and 1 failure in 10 minutes).
+      - series: 'botcenter_instance_messages_total{instance_id="c", status="sent", host="h1", role="worker"}'
+        values: '0+0.1x20'
+      - series: 'botcenter_instance_messages_total{instance_id="c", status="failed", host="h1", role="worker"}'
+        values: '0+0.1x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: InstanceSendFailureRateHigh
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+              instance_id: a
+            exp_annotations:
+              summary: 'The send failure rate of the instance a is 16.67% in 10 minutes on h1'
+              description: 'More than 5 % of the sends of this number failed. A ban of the number can be the cause. Runbook: "Incident: number banned".'
+
+  # ARCH-17: the worker answers, but it has no PostgreSQL or Redis connection.
+  - name: a worker that is alive but not ready fires after 2 minutes
+    interval: 1m
+    input_series:
+      - series: 'botcenter_worker_ready{host="h1", role="worker"}'
+        values: '1 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: WorkerNotReady
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: WorkerNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'The worker process on h1 cannot reach PostgreSQL or Redis'
+              description: 'No job runs. Runbook: "Incident: worker not ready".'
+
+  # The `call_webhook` actions of the bots use the same result values as the deliveries.
+  - name: bot webhook calls that succeed do not fire, failed and dead calls above 20 % fire
+    interval: 1m
+    input_series:
+      - series: 'botcenter_bot_webhook_calls_total{result="succeeded", host="h1", role="worker"}'
+        values: '0+20x30'
+      - series: 'botcenter_bot_webhook_calls_total{result="succeeded", host="h2", role="worker"}'
+        values: '0+6x30'
+      - series: 'botcenter_bot_webhook_calls_total{result="failed", host="h2", role="worker"}'
+        values: '0+3x30'
+      - series: 'botcenter_bot_webhook_calls_total{result="dead", host="h2", role="worker"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: BotWebhookCallFailuresHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: h2
+            exp_annotations:
+              summary: '40% of the bot webhook calls failed in 15 minutes on h2'
+              description: 'An endpoint of a `call_webhook` action does not answer 2xx. The calls retry. Tell the owner of the bot.'
+
+  # Redis is shared with the Evolution API. noeviction: a full Redis refuses the writes of both.
+  - name: Redis memory above 80 % warns, above 90 % is critical, and a Redis that is down fires
+    interval: 1m
+    input_series:
+      - series: 'redis_memory_max_bytes{host="h1", job="redis"}'
+        values: '100x20'
+      - series: 'redis_memory_used_bytes{host="h1", job="redis"}'
+        values: '50 85 85 85 85 85 85 85 95 95 95 95 95 95 95 95'
+      - series: 'redis_up{host="h1", job="redis"}'
+        values: '1 1 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RedisMemoryHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: h1
+            exp_annotations:
+              summary: 'Redis uses 85% of its maxmemory on h1'
+              description: 'Redis refuses writes when it is full (noeviction): the queues and the Evolution cache stop. Runbook: "Incident: queue backlog", step 6.'
+      - eval_time: 14m
+        alertname: RedisMemoryCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'Redis uses 95% of its maxmemory on h1'
+              description: 'Redis refuses writes when it is full (noeviction): the queues and the Evolution cache stop. Runbook: "Incident: queue backlog", step 6.'
+      - eval_time: 5m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              host: h1
+            exp_annotations:
+              summary: 'The Redis exporter cannot reach Redis on h1'
+              description: 'The queues, the rate limits, and the Evolution cache do not work. Check `bc ps redis` and `bc logs --since 15m redis`.'

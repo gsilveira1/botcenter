@@ -26,6 +26,9 @@ const key32Base64 = z
 
 const httpUrl = z.url({ protocol: /^https?$/ });
 
+/** An IPv4 or IPv6 address to listen on (`::` is every address). */
+const ipAddress = z.union([z.ipv4(), z.ipv6()]);
+
 /** An empty value is the same as a missing value (Compose writes `NAME=` for an unset optional value). */
 const optional = <T extends z.ZodType>(schema: T) =>
   z.preprocess((value) => (value === '' ? undefined : value), schema.optional());
@@ -129,8 +132,20 @@ export const EnvSchema = z.object({
    */
   WORKER_SHUTDOWN_TIMEOUT_MS: positiveInt.max(600_000).default(100_000),
 
-  /** Internal HTTP listener of the worker process (`/metrics`, `/health/live`). */
+  /** Internal HTTP listener of the worker process (`/metrics`, `/health/live`, `/health/ready`). */
   WORKER_METRICS_PORT: positiveInt.max(65535).default(9464),
+  /**
+   * Address of the worker listener. Compose sets the address of the worker on the `metrics` network, so
+   * only Alloy reaches it (SEC-01). `::` (the default) listens on every address.
+   */
+  WORKER_METRICS_HOST: ipAddress.default('::'),
+  /**
+   * Internal listener of the API process: `GET /metrics` only (SEC-01). The HTTP port of the API has no
+   * `/metrics` route, so a redirect through the Evolution API cannot read it.
+   */
+  API_METRICS_PORT: positiveInt.max(65535).default(9465),
+  /** Address of the API metrics listener. Compose sets the address of the API on the `metrics` network. */
+  API_METRICS_HOST: ipAddress.default('::'),
   WORKER_CONCURRENCY_OUTBOUND: positiveInt.max(200).default(10),
   WORKER_CONCURRENCY_INBOUND: positiveInt.max(200).default(10),
   WORKER_CONCURRENCY_WEBHOOKS: positiveInt.max(200).default(10),

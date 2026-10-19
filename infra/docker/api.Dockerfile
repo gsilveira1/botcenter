@@ -12,8 +12,8 @@
 #   runtime  Node 24 Alpine, tini, user `node` (uid 1000), the pruned app, and the Prisma migrations.
 #
 # One image, three roles (the `ROLE` variable, read by botcenter-entrypoint.sh):
-#   ROLE=api      node dist/main.js     (HTTP server on PORT, default 3000)
-#   ROLE=worker   node dist/worker.js   (queue workers; /metrics and /health/live on WORKER_METRICS_PORT 9464)
+#   ROLE=api      node dist/main.js     (HTTP server on PORT, default 3000; /metrics on API_METRICS_PORT 9465)
+#   ROLE=worker   node dist/worker.js   (queue workers; /metrics and /health/* on WORKER_METRICS_PORT 9464)
 #   A command     runs as given, for example the `migrate` service of compose.prod.yml:
 #                 pnpm --filter @botcenter/api db:migrate
 #
@@ -66,6 +66,7 @@ RUN apk add --no-cache tini openssl \
 ENV NODE_ENV=production \
     PORT=3000 \
     WORKER_METRICS_PORT=9464 \
+    API_METRICS_PORT=9465 \
     ROLE=api \
     NODE_OPTIONS=--max-old-space-size=384
 WORKDIR /app
@@ -78,8 +79,9 @@ COPY --chown=root:root --chmod=0755 infra/docker/botcenter-entrypoint.sh /usr/lo
 # The app files belong to root and are read-only for `node`. The process writes only to /tmp.
 USER node
 WORKDIR /app/apps/api
-EXPOSE 3000 9464
+EXPOSE 3000 9464 9465
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
-    CMD if [ "$ROLE" = "worker" ]; then wget -q -O /dev/null "http://127.0.0.1:${WORKER_METRICS_PORT}/health/live"; \
+    CMD if [ "$ROLE" = "worker" ]; then h="${WORKER_METRICS_HOST:-127.0.0.1}"; [ "$h" = "::" ] && h=127.0.0.1; \
+        wget -q -O /dev/null "http://${h}:${WORKER_METRICS_PORT}/health/live"; \
         else wget -q -O /dev/null "http://127.0.0.1:${PORT}/health/live"; fi || exit 1
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/botcenter-entrypoint"]

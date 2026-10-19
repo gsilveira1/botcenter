@@ -56,17 +56,8 @@ services:
           memory: 640M
 
   redis:
-    command:
-      - sh
-      - -c
-      - >-
-        exec redis-server
-        --appendonly yes
-        --appendfsync everysec
-        --save ''
-        --maxmemory 160mb
-        --maxmemory-policy noeviction
-        --requirepass "$$REDIS_PASSWORD"
+    environment:
+      REDIS_MAXMEMORY: 160mb
     deploy:
       resources:
         limits:

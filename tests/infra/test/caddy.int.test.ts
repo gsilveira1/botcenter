@@ -1,4 +1,7 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:https';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   GenericContainer,
   Network,
@@ -8,7 +11,7 @@ import {
 } from 'testcontainers';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { nodeImage, prodImage } from './helpers/images.js';
-import { readRepoFile } from './helpers/repo.js';
+import { readRepoFile, run } from './helpers/repo.js';
 
 const DOMAIN = 'botcenter.test';
 
@@ -27,6 +30,89 @@ http.createServer((req, res) => {
 }).listen(3000);
 `;
 
+/**
+ * SEC-14: the site needs a client certificate of the Cloudflare origin pull CA. The test uses its own CA
+ * in place of the Cloudflare CA (the same path in the container) and a client certificate of that CA.
+ */
+interface ClientPki {
+  ca: string;
+  cert: Buffer;
+  key: Buffer;
+  otherCert: Buffer;
+  otherKey: Buffer;
+}
+let pki: ClientPki;
+let pkiDir: string;
+
+async function openssl(...args: string[]): Promise<void> {
+  const result = await run('openssl', args, {}, pkiDir);
+  if (result.code !== 0) throw new Error(`openssl ${args[0]}: ${result.stderr}`);
+}
+
+/** A CA and a client certificate signed by it, and a second client certificate of another CA. */
+async function makePki(): Promise<ClientPki> {
+  pkiDir = mkdtempSync(path.join(tmpdir(), 'botcenter-aop-'));
+  writeFileSync(path.join(pkiDir, 'client.ext'), 'extendedKeyUsage=clientAuth\n');
+  for (const name of ['ca', 'other']) {
+    await openssl(
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-days',
+      '2',
+      '-subj',
+      `/CN=${name}`,
+      '-keyout',
+      `${name}.key`,
+      '-out',
+      `${name}.pem`,
+      '-addext',
+      'basicConstraints=critical,CA:TRUE',
+      '-addext',
+      'keyUsage=critical,keyCertSign',
+    );
+    await openssl(
+      'req',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-subj',
+      `/CN=client-${name}`,
+      '-keyout',
+      `client-${name}.key`,
+      '-out',
+      `client-${name}.csr`,
+    );
+    await openssl(
+      'x509',
+      '-req',
+      '-in',
+      `client-${name}.csr`,
+      '-CA',
+      `${name}.pem`,
+      '-CAkey',
+      `${name}.key`,
+      '-CAcreateserial',
+      '-days',
+      '2',
+      '-out',
+      `client-${name}.pem`,
+      '-extfile',
+      'client.ext',
+    );
+  }
+  const file = (name: string) => readFileSync(path.join(pkiDir, name));
+  return {
+    ca: file('ca.pem').toString(),
+    cert: file('client-ca.pem'),
+    key: file('client-ca.key'),
+    otherCert: file('client-other.pem'),
+    otherKey: file('client-other.key'),
+  };
+}
+
 let network: StartedNetwork;
 let upstream: StartedTestContainer;
 let caddy: StartedTestContainer;
@@ -41,6 +127,7 @@ async function startCaddy(cloudflareSnippet: string): Promise<StartedTestContain
     .withCopyContentToContainer([
       { content: readRepoFile('infra/caddy/Caddyfile'), target: '/etc/caddy/Caddyfile' },
       { content: cloudflareSnippet, target: '/etc/caddy/cloudflare-ips.caddy' },
+      { content: pki.ca, target: '/etc/caddy/cloudflare-origin-pull-ca.pem' },
     ])
     .withExposedPorts(443, 8081)
     .withWaitStrategy(Wait.forHttp('/healthz', 8081))
@@ -56,7 +143,13 @@ interface Answer {
 function call(
   container: StartedTestContainer,
   path: string,
-  options: { method?: string; body?: Buffer; headers?: Record<string, string> } = {},
+  options: {
+    method?: string;
+    body?: Buffer;
+    headers?: Record<string, string>;
+    /** The client certificate: `ca` (default, trusted), `other` (another CA), or `none`. */
+    client?: 'ca' | 'other' | 'none';
+  } = {},
 ): Promise<Answer> {
   return new Promise((resolve, reject) => {
     const req = request(
@@ -69,6 +162,11 @@ function call(
         headers: { host: DOMAIN, ...options.headers },
         // `tls internal`: a certificate of the local CA of Caddy.
         rejectUnauthorized: false,
+        ...(options.client === 'none'
+          ? {}
+          : options.client === 'other'
+            ? { cert: pki.otherCert, key: pki.otherKey }
+            : { cert: pki.cert, key: pki.key }),
         // A new connection for each request: after a 413, the rest of a large body stays on the socket.
         agent: false,
       },
@@ -91,6 +189,7 @@ function call(
 }
 
 beforeAll(async () => {
+  pki = await makePki();
   network = await new Network().start();
   upstream = await new GenericContainer(nodeImage())
     .withNetwork(network)
@@ -109,9 +208,22 @@ afterAll(async () => {
   await caddy?.stop();
   await upstream?.stop();
   await network?.stop();
+  if (pkiDir) rmSync(pkiDir, { recursive: true, force: true });
 });
 
 describe('infra/caddy/Caddyfile', () => {
+  it('refuses a TLS client without a certificate of the origin pull CA (SEC-14)', async () => {
+    for (const client of ['none', 'other'] as const) {
+      const answer = await call(caddy, '/health/ready', { client }).catch((error: Error) => ({
+        status: -2,
+        headers: {},
+        body: error.message,
+      }));
+      expect([-1, -2], client).toContain(answer.status);
+    }
+    expect((await call(caddy, '/health/ready')).status).toBe(200);
+  });
+
   it('forwards /v1/* and /health/* to the API', async () => {
     const v1 = await call(caddy, '/v1/messages/abc');
     expect(v1.status).toBe(200);

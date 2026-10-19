@@ -3,6 +3,8 @@ import type { AddressInfo } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { testEnv } from '../../test/support/env';
 import { MetricsService } from './metrics.service';
+import { createWorkerReadiness } from '../health/worker-readiness';
+import { startApiMetricsServer } from './metrics-listener';
 import { closeServer, startWorkerMetricsServer } from './worker-metrics.server';
 
 const FIXED_NAMES = [
@@ -75,6 +77,59 @@ describe('worker metrics listener', () => {
       expect((await get(port, '/metrics')).body).toContain('botcenter_jobs_total');
       expect(await get(port, '/health/live')).toEqual({ status: 200, body: '{"status":"ok"}' });
       expect((await get(port, '/other')).status).toBe(404);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+describe('worker readiness (ARCH-17)', () => {
+  it('answers /health/ready with 503 and sets botcenter_worker_ready 0 when Redis is down', async () => {
+    let redisUp = false;
+    const readiness = createWorkerReadiness(
+      { $queryRaw: async () => [1] },
+      {
+        ping: async () => {
+          if (!redisUp) throw Object.assign(new Error('down'), { code: 'ECONNREFUSED' });
+          return 'PONG';
+        },
+      },
+    );
+    const metrics = new MetricsService(testEnv({ ROLE: 'worker' }));
+    const server = await startWorkerMetricsServer(metrics, 0, '127.0.0.1', readiness);
+    const { port } = server.address() as AddressInfo;
+    try {
+      const down = await get(port, '/health/ready');
+      expect(down.status).toBe(503);
+      expect(JSON.parse(down.body)).toMatchObject({
+        status: 'unavailable',
+        checks: { database: { status: 'up' }, redis: { status: 'down', error: 'ECONNREFUSED' } },
+      });
+      expect((await get(port, '/metrics')).body).toContain(
+        'botcenter_worker_ready{role="worker"} 0',
+      );
+
+      redisUp = true;
+      expect((await get(port, '/health/ready')).status).toBe(200);
+      expect((await get(port, '/metrics')).body).toContain(
+        'botcenter_worker_ready{role="worker"} 1',
+      );
+      // Liveness stays independent of the dependencies.
+      expect((await get(port, '/health/live')).status).toBe(200);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+describe('API metrics listener (SEC-01)', () => {
+  it('serves /metrics only', async () => {
+    const server = await startApiMetricsServer(new MetricsService(testEnv()), 0, '127.0.0.1');
+    const { port } = server.address() as AddressInfo;
+    try {
+      expect((await get(port, '/metrics')).body).toContain('http_request_duration_seconds');
+      expect((await get(port, '/health/live')).status).toBe(404);
+      expect((await get(port, '/v1/messages')).status).toBe(404);
     } finally {
       await closeServer(server);
     }

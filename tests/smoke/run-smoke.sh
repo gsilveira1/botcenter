@@ -100,11 +100,27 @@ set_env compose.env BOTCENTER_ENV_DIR "$ENV_DIR"
 set_env compose.env BOTCENTER_ENVIRONMENT smoke
 set_env compose.env CADDY_CLOUDFLARE_IPS_FILE "$ROOT/infra/caddy/cloudflare-ips.caddy"
 set_env compose.env BOTCENTER_COMPOSE_EXTRA_FILES ''
+set_env compose.env BOTCENTER_IMAGE_REPOSITORY "local/smoke/botcenter-api"
+set_env api.env CONNECT_ALLOWED_ORIGINS "https://app.smoke.test"
+# Alloy does not start in the smoke stack; the value only needs to be a number.
+grep -q '^BOTCENTER_JOURNAL_GID=CHANGE_ME$' "$ENV_DIR/compose.env" && set_env compose.env BOTCENTER_JOURNAL_GID 0
+
+# A local CA and a client certificate in place of Cloudflare Authenticated Origin Pulls (SEC-14).
+PKI="$WORK/pki"
+mkdir -p "$PKI"
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=smoke-origin-pull-ca -keyout "$PKI/ca.key" \
+  -out "$PKI/ca.pem" -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj /CN=smoke-cloudflare -keyout "$PKI/client.key" -out "$PKI/client.csr" 2>/dev/null
+printf 'extendedKeyUsage=clientAuth\n' >"$PKI/client.ext"
+openssl x509 -req -in "$PKI/client.csr" -CA "$PKI/ca.pem" -CAkey "$PKI/ca.key" -CAcreateserial -days 2 \
+  -extfile "$PKI/client.ext" -out "$PKI/client.pem" 2>/dev/null
+chmod 644 "$PKI/ca.pem"
 cat >>"$ENV_DIR/compose.env" <<EOF
 SMOKE_PROJECT=$SMOKE_PROJECT
 SMOKE_DIR=$SMOKE_DIR
 SMOKE_HTTP_PORT=$HTTP_PORT
 SMOKE_HTTPS_PORT=$HTTPS_PORT
+SMOKE_ORIGIN_PULL_CA=$PKI/ca.pem
 EOF
 printf 'MINIO_ROOT_USER=botcenter-smoke\nMINIO_ROOT_PASSWORD=%s\n' "$MINIO_PASSWORD" >"$ENV_DIR/minio.env"
 chmod 600 "$ENV_DIR/minio.env"
@@ -153,6 +169,8 @@ SMOKE_COMPOSE_ARGS="$(node -e 'console.log(JSON.stringify(process.argv.slice(1))
   SMOKE_HTTP_PORT="$HTTP_PORT" \
   SMOKE_DOMAIN="$DOMAIN" \
   SMOKE_CA_FILE="$WORK/caddy-root.crt" \
+  SMOKE_CLIENT_CERT="$PKI/client.pem" \
+  SMOKE_CLIENT_KEY="$PKI/client.key" \
   SMOKE_ENV_DIR="$ENV_DIR" \
   SMOKE_MIGRATE_EXIT="$MIGRATE_EXIT" \
   SMOKE_REPORT="$RESULTS_DIR/smoke-$STAMP.json" \

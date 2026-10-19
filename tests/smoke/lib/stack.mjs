@@ -76,9 +76,16 @@ export function createStack(composeArgs) {
         ],
         sql,
       ),
-    /** The Prometheus text of the worker (internal listener, port 9464). */
+    /** The Prometheus text of the worker (internal listener on its `metrics` address, port 9464). */
     workerMetrics: () =>
-      compose(['exec', '-T', 'worker', 'wget', '-q', '-O', '-', 'http://127.0.0.1:9464/metrics']),
+      compose([
+        'exec',
+        '-T',
+        'worker',
+        'sh',
+        '-c',
+        'wget -q -O - "http://$WORKER_METRICS_HOST:9464/metrics"',
+      ]),
     /**
      * The log lines of a service since the start of the stack.
      * @param {string} service

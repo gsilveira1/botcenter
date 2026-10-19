@@ -7,16 +7,26 @@ import { createSseParser } from './sse.mjs';
 
 /**
  * @typedef {{ status: number, headers: import('node:http').IncomingHttpHeaders, text: string, json: any }} HttpAnswer
- * @typedef {{ host: string, port: number, domain: string, ca?: Buffer, tls: boolean }} Target
+ * @typedef {{ host: string, port: number, domain: string, ca?: Buffer, cert?: Buffer, key?: Buffer, tls: boolean }} Target
  */
 
 /**
- * @param {{ httpsPort: number, httpPort: number, domain: string, caFile: string }} options
+ * The client certificate stands for Cloudflare: Caddy requires Authenticated Origin Pulls (SEC-14).
+ * @param {{ httpsPort: number, httpPort: number, domain: string, caFile: string, clientCertFile: string, clientKeyFile: string }} options
  */
-export function createClient({ httpsPort, httpPort, domain, caFile }) {
+export function createClient({
+  httpsPort,
+  httpPort,
+  domain,
+  caFile,
+  clientCertFile,
+  clientKeyFile,
+}) {
   const ca = readFileSync(caFile);
+  const cert = readFileSync(clientCertFile);
+  const key = readFileSync(clientKeyFile);
   /** @type {Target} */
-  const secure = { host: '127.0.0.1', port: httpsPort, domain, ca, tls: true };
+  const secure = { host: '127.0.0.1', port: httpsPort, domain, ca, cert, key, tls: true };
   /** @type {Target} */
   const plain = { host: '127.0.0.1', port: httpPort, domain, tls: false };
   return {
@@ -51,6 +61,8 @@ function requestOptions(target, method, path, headers) {
     path,
     servername: target.domain,
     ca: target.ca,
+    cert: target.cert,
+    key: target.key,
     headers: { host: `${target.domain}:${target.port}`, ...headers },
     timeout: 30_000,
   };
