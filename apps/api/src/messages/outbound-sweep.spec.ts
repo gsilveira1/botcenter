@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { OutboundSweep, SWEEP_MIN_AGE_MS } from './outbound-sweep';
+import { OutboundSweep, SWEEP_BATCH_SIZE, SWEEP_MIN_AGE_MS } from './outbound-sweep';
 
 const row = (id: string) => ({
   id,
@@ -40,7 +40,7 @@ describe('OutboundSweep', () => {
           status: 'queued',
           createdAt: { lt: new Date(now.getTime() - SWEEP_MIN_AGE_MS) },
         },
-        orderBy: { createdAt: 'asc' },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       }),
     );
   });
@@ -57,5 +57,33 @@ describe('OutboundSweep', () => {
       { messageId: 'c', tenantId: 't-1', instanceId: 'i-1', externalRef: 'owner-1' },
       expect.objectContaining({ status: 'failed', reason: 'internal_error' }),
     );
+  });
+
+  it('continues after the last row of a full page at the next run (ARCH-10)', async () => {
+    const page = Array.from({ length: SWEEP_BATCH_SIZE }, (_, index) => ({
+      ...row(`r-${index}`),
+      createdAt: new Date(1_000 + index),
+    }));
+    const s = setup({});
+    s.prisma.message.findMany.mockResolvedValueOnce(page).mockResolvedValueOnce([]);
+    s.queue.getJobState.mockResolvedValue('delayed');
+    await s.sweep.run();
+    await s.sweep.run();
+    const second = (s.prisma.message.findMany.mock.calls as unknown[][])[1]?.[0] as {
+      where: { OR?: unknown };
+    };
+    expect(second.where.OR).toEqual([
+      { createdAt: { gt: new Date(1_000 + SWEEP_BATCH_SIZE - 1) } },
+      {
+        createdAt: new Date(1_000 + SWEEP_BATCH_SIZE - 1),
+        id: { gt: `r-${SWEEP_BATCH_SIZE - 1}` },
+      },
+    ]);
+    // A short page ends the pass: the next run starts at the oldest row again.
+    await s.sweep.run();
+    const third = (s.prisma.message.findMany.mock.calls as unknown[][])[2]?.[0] as {
+      where: { OR?: unknown };
+    };
+    expect(third.where.OR).toBeUndefined();
   });
 });

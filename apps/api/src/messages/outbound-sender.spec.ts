@@ -7,6 +7,7 @@ import { MediaUnavailableError } from '../media/media.service';
 import { MetricsService } from '../metrics/metrics.service';
 import type { OutboundJob } from '../queues/queue-names';
 import { RetryLaterError, isDelayedError } from '../queues/worker.factory';
+import { OutboundRateGate } from './outbound-rate-gate';
 import { OutboundSender, blockedReason } from './outbound-sender';
 import type { OutboundInstance } from './outbound-sender';
 import { RetryableSendError } from './retry-policy';
@@ -27,11 +28,13 @@ function instance(overrides: Partial<OutboundInstance> = {}): OutboundInstance {
 
 interface Setup {
   sender: OutboundSender;
+  gate: OutboundRateGate;
   provider: FakeWhatsAppProvider;
   job: Job<OutboundJob>;
   message: Record<string, unknown>;
   writer: { apply: ReturnType<typeof vi.fn> };
-  bucket: { take: ReturnType<typeof vi.fn> };
+  bucket: { take: ReturnType<typeof vi.fn>; refund: ReturnType<typeof vi.fn> };
+  findFirst: ReturnType<typeof vi.fn>;
   media: { toProviderContent: ReturnType<typeof vi.fn> };
   alerts: { notify: ReturnType<typeof vi.fn> };
   order: { hasOlderQueued: ReturnType<typeof vi.fn>; promoteNext: ReturnType<typeof vi.fn> };
@@ -55,11 +58,19 @@ async function setup(): Promise<Setup> {
     createdAt: new Date(Date.now() - 1_000),
     instance: instance(),
   };
-  const prisma = {
-    forTenant: () => ({ message: { findFirst: vi.fn(async () => message) } }),
+  const findFirst = vi.fn(async () => message);
+  const prisma = { forTenant: () => ({ message: { findFirst } }) };
+  const limits = {
+    get: vi.fn(async () => ({
+      rateLimitPerMinute: 20,
+      firstConnectedAt: new Date('2026-01-01T00:00:00Z'),
+    })),
   };
   const writer = { apply: vi.fn(async () => true) };
-  const bucket = { take: vi.fn(async () => ({ allowed: true, waitMs: 0 })) };
+  const bucket = {
+    take: vi.fn(async () => ({ allowed: true, waitMs: 0 })),
+    refund: vi.fn(async () => {}),
+  };
   const media = { toProviderContent: vi.fn() };
   const alerts = { notify: vi.fn(async () => {}) };
   const order = {
@@ -68,19 +79,20 @@ async function setup(): Promise<Setup> {
   };
   const env = testEnv();
   const metrics = new MetricsService(env);
+  const gate = new OutboundRateGate(bucket as never, limits as never, metrics, env);
   const sender = new OutboundSender(
     prisma as never,
     provider,
     writer as never,
-    bucket as never,
+    gate,
     media as never,
     metrics,
     alerts as never,
-    env,
     order as never,
   );
   const job = {
     data: { tenantId: 't-1', messageId: 'm-1', instanceId: 'i-1' },
+    opts: { priority: 1 },
     attemptsMade: 0,
     token: 'lock-token',
     moveToDelayed: vi.fn(async () => {}),
@@ -88,7 +100,20 @@ async function setup(): Promise<Setup> {
       job.data = data;
     }),
   } as unknown as Job<OutboundJob>;
-  return { sender, provider, job, message, writer, bucket, media, alerts, order, metrics };
+  return {
+    sender,
+    gate,
+    provider,
+    job,
+    message,
+    writer,
+    bucket,
+    findFirst,
+    media,
+    alerts,
+    order,
+    metrics,
+  };
 }
 
 async function counter(metrics: MetricsService, name: string, labels: Record<string, string>) {
@@ -152,7 +177,8 @@ describe('OutboundSender', () => {
     const second = await s.sender.process(s.job).catch((caught: unknown) => caught);
     expect((second as RetryLaterError).delayMs).toBe(2_000);
     expect(s.job.data.orderWaits).toBe(2);
-    expect(s.bucket.take).not.toHaveBeenCalled();
+    // The job gives its send token back.
+    expect(s.bucket.refund).toHaveBeenCalledTimes(2);
     expect(s.provider.sent).toHaveLength(0);
     expect(s.order.hasOlderQueued).toHaveBeenCalledWith(
       expect.objectContaining({ contact: '5511987654321', priority: 'reply', seq: 7n }),
@@ -165,6 +191,39 @@ describe('OutboundSender', () => {
     s.message['instance'] = instance({ status: 'logged_out' });
     expect(await s.sender.process(s.job)).toBe('failed');
     expect(s.order.promoteNext).toHaveBeenCalledTimes(2);
+  });
+
+  it('takes the token before the database read, and keeps the ready time in the job (ARCH-10)', async () => {
+    s.bucket.take.mockResolvedValueOnce({ allowed: false, waitMs: 9_000 });
+    const before = Date.now();
+    const error = await s.sender.process(s.job).catch((caught: unknown) => caught);
+    expect(isDelayedError(error)).toBe(true);
+    expect(s.findFirst).not.toHaveBeenCalled();
+    expect(s.job.data.readyAt).toBeGreaterThanOrEqual(before + 9_000);
+    // A reply does not wait in the line of the bulk sends.
+    expect(s.bucket.take).toHaveBeenCalledWith(
+      'i-1',
+      { ratePerMinute: 20, burst: 3 },
+      {
+        spread: false,
+      },
+    );
+  });
+
+  it('asks the bucket for a place in the line for a bulk send (ARCH-10)', async () => {
+    (s.job.opts as { priority: number }).priority = 10;
+    await s.sender.process(s.job);
+    expect(s.bucket.take).toHaveBeenCalledWith('i-1', expect.anything(), { spread: true });
+  });
+
+  it('gives the token back when the message is not sent now (ARCH-10)', async () => {
+    s.message['status'] = 'sent';
+    expect(await s.sender.process(s.job)).toBe('skipped');
+    s.message['status'] = 'queued';
+    s.order.hasOlderQueued.mockResolvedValueOnce(true);
+    await s.sender.process(s.job).catch(() => undefined);
+    expect(s.bucket.refund).toHaveBeenCalledTimes(2);
+    expect(s.bucket.refund).toHaveBeenCalledWith('i-1', { ratePerMinute: 20, burst: 3 });
   });
 
   it('fails at once for an invalid recipient', async () => {
@@ -242,7 +301,7 @@ describe('OutboundSender', () => {
 
   it('uses the warm-up rate for a new number', () => {
     const fresh = instance({ firstConnectedAt: new Date() });
-    expect(s.sender.limitsFor(fresh)).toEqual({ ratePerMinute: 4, burst: 3 });
-    expect(s.sender.limitsFor(instance())).toEqual({ ratePerMinute: 20, burst: 3 });
+    expect(s.gate.limitsFor(fresh)).toEqual({ ratePerMinute: 4, burst: 3 });
+    expect(s.gate.limitsFor(instance())).toEqual({ ratePerMinute: 20, burst: 3 });
   });
 });

@@ -19,6 +19,7 @@ export interface SweepResult {
 
 interface QueuedRow {
   id: string;
+  createdAt: Date;
   tenantId: string;
   instanceId: string;
   priority: MessagePriority;
@@ -37,6 +38,8 @@ interface QueuedRow {
 @Injectable()
 export class OutboundSweep {
   private readonly logger = getLogger('outbound-sweep');
+  /** The last row of the last full page. The next run continues after it (ARCH-10). */
+  private cursor: { createdAt: Date; id: string } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -65,24 +68,43 @@ export class OutboundSweep {
     return { checked: rows.length, requeued, failed };
   }
 
-  /** The oldest `queued` outbound rows of all tenants (index `(status, createdAt)`). */
-  private findQueued(now: Date): Promise<QueuedRow[]> {
-    return this.prisma.message.findMany({
+  /**
+   * One page of `queued` outbound rows of all tenants, in the order `createdAt, id` (index
+   * `(status, createdAt)`). Each run reads the page after the page of the run before, so a large backlog
+   * of waiting rows cannot hide the newer rows that lost their job. A short page ends the pass, and the
+   * next run starts at the oldest row again. The cursor is in the memory of the worker process.
+   */
+  private async findQueued(now: Date): Promise<QueuedRow[]> {
+    const after = this.cursor;
+    const rows = await this.prisma.message.findMany({
       where: {
         direction: 'outbound',
         status: 'queued',
         createdAt: { lt: new Date(now.getTime() - SWEEP_MIN_AGE_MS) },
+        ...(after
+          ? {
+              OR: [
+                { createdAt: { gt: after.createdAt } },
+                { createdAt: after.createdAt, id: { gt: after.id } },
+              ],
+            }
+          : {}),
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       take: SWEEP_BATCH_SIZE,
       select: {
         id: true,
+        createdAt: true,
         tenantId: true,
         instanceId: true,
         priority: true,
         instance: { select: { externalRef: true } },
       },
     });
+    const last = rows.at(-1);
+    this.cursor =
+      rows.length === SWEEP_BATCH_SIZE && last ? { createdAt: last.createdAt, id: last.id } : null;
+    return rows;
   }
 
   private async failLost(rows: readonly QueuedRow[]): Promise<number> {

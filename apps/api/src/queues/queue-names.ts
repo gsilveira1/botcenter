@@ -29,6 +29,11 @@ export interface OutboundJob {
   ambiguousSends?: number;
   /** Waits for an older queued row of the same contact (send order, ARCH-02). The wait grows with it. */
   orderWaits?: number;
+  /**
+   * Epoch ms when a job that went back to the delayed set (rate limit, send order) is ready again. The
+   * queue delay metric reads it, because BullMQ keeps the creation time of the job.
+   */
+  readyAt?: number;
 }
 
 /** `outbound`, job name `sweep`: the repeatable job that enqueues `queued` messages without a job again. */
