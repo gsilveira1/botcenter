@@ -17,3 +17,12 @@ export function nodeImage(): string {
   if (!match) throw new Error('no NODE_IMAGE in api.Dockerfile');
   return match[1]!;
 }
+
+/** A tool image that the CI workflow pins (`<NAME>: image@sha256:...` in .github/workflows/ci.yml). */
+export function ciImage(name: string): string {
+  const match = new RegExp(`^\\s+${name}: (\\S+@sha256:[0-9a-f]{64})$`, 'm').exec(
+    readRepoFile('.github/workflows/ci.yml'),
+  );
+  if (!match) throw new Error(`no ${name} in .github/workflows/ci.yml`);
+  return match[1]!;
+}

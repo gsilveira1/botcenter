@@ -134,3 +134,28 @@ tests:
             exp_annotations:
               summary: 'CPU usage is 80% for 15 minutes on h1'
               description: 'This is a trigger to scale up (runbook: "Scale up").'
+
+  # ARCH-07: the delivery worker counts the results `succeeded`, `failed`, and `dead`.
+  - name: webhook deliveries that succeed do not fire, failed and dead deliveries above 20 % fire
+    interval: 1m
+    input_series:
+      # h1: 20 successful deliveries per minute, no failure.
+      - series: 'botcenter_webhook_deliveries_total{result="succeeded", host="h1", role="worker"}'
+        values: '0+20x30'
+      # h2: 6 successful and 4 failed or dead deliveries per minute (40 % failures).
+      - series: 'botcenter_webhook_deliveries_total{result="succeeded", host="h2", role="worker"}'
+        values: '0+6x30'
+      - series: 'botcenter_webhook_deliveries_total{result="failed", host="h2", role="worker"}'
+        values: '0+3x30'
+      - series: 'botcenter_webhook_deliveries_total{result="dead", host="h2", role="worker"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: WebhookDeliveryFailuresHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              host: h2
+            exp_annotations:
+              summary: '40% of the webhook deliveries failed in 15 minutes on h2'
+              description: 'A client endpoint does not answer 2xx. The deliveries retry (1 min to 6 h). Tell the owner of the endpoint.'

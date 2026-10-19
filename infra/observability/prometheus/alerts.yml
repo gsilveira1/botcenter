@@ -8,7 +8,7 @@
 #   botcenter_queue_delay_seconds{queue}        gauge: age of the oldest waiting job of a queue
 #   botcenter_queue_size{queue,state}           gauge: jobs per queue and state
 #   botcenter_messages_total{status}            counter: outbound messages per status
-#   botcenter_webhook_deliveries_total{result}  counter: webhook deliveries (success, failure, dead)
+#   botcenter_webhook_deliveries_total{result}  counter: webhook delivery attempts (succeeded, failed, dead)
 #   botcenter_rate_limit_denied_total{scope}    counter: denied requests (key, instance)
 #   http_request_duration_seconds               histogram: API latency (method, route, status_code)
 # Metrics of the host: node exporter of Alloy, and the text files of infra/backup.
@@ -76,7 +76,7 @@ groups:
       - alert: WebhookDeliveryFailuresHigh
         expr: |
           (
-            sum by (host) (increase(botcenter_webhook_deliveries_total{result!="success"}[15m]))
+            sum by (host) (increase(botcenter_webhook_deliveries_total{result=~"failed|dead"}[15m]))
             /
             sum by (host) (increase(botcenter_webhook_deliveries_total[15m]))
           ) > 0.2

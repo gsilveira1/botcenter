@@ -457,7 +457,7 @@ The alert rules (`infra/observability/prometheus/alerts.yml`) and the dashboard 
 | `botcenter_queue_delay_seconds` | gauge | `queue` |
 | `botcenter_queue_size` | gauge | `queue`, `state` |
 | `botcenter_messages_total` | counter | `status` |
-| `botcenter_webhook_deliveries_total` | counter | `result` (`success`, `failure`, `dead`) |
+| `botcenter_webhook_deliveries_total` | counter | `result` (`succeeded`, `failed`, `dead`) |
 | `botcenter_rate_limit_denied_total` | counter | `scope` (`key`, `instance`) |
 | `http_request_duration_seconds` | histogram | `method`, `route`, `status_code` |
 
