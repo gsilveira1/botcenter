@@ -34,7 +34,7 @@ export const ConnectToken = () =>
 /**
  * Internal network only: the client address must be private (after the trusted proxies). With
  * `secret: true` (the default), the request must also carry the shared secret of the provider webhook
- * in the `x-botcenter-webhook-secret` header. `/metrics` uses `@Internal({ secret: false })`.
+ * in the `x-botcenter-webhook-secret` header. `@Internal({ secret: false })` gives a route without the secret.
  * Internal routes are not in the OpenAPI document.
  */
 export const Internal = (options: { secret?: boolean } = {}) =>

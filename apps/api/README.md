@@ -2,10 +2,10 @@
 
 The NestJS 11 application of Bot Center on Fastify. One build, two processes:
 
-| Process | Entry            | `ROLE`   | Root module        | Content                                                                                    |
-| ------- | ---------------- | -------- | ------------------ | ------------------------------------------------------------------------------------------ |
-| API     | `dist/main.js`   | `api`    | `app.module.ts`    | HTTP routes, the global guard, the internal provider webhook, `/health/*`, `/metrics`      |
-| Worker  | `dist/worker.js` | `worker` | `worker.module.ts` | BullMQ consumers, the inbound handler registry, `/metrics` on `WORKER_METRICS_PORT` (9464) |
+| Process | Entry            | `ROLE`   | Root module        | Content                                                                                                            |
+| ------- | ---------------- | -------- | ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| API     | `dist/main.js`   | `api`    | `app.module.ts`    | HTTP routes, the global guard, the internal provider webhook, `/health/*`, `/metrics` on `API_METRICS_PORT` (9465) |
+| Worker  | `dist/worker.js` | `worker` | `worker.module.ts` | BullMQ consumers, the inbound handler registry, `/metrics` on `WORKER_METRICS_PORT` (9464)                         |
 
 Only the orchestrator edits `app.module.ts`, `worker.module.ts`, and `src/provider/provider.factory.ts`.
 
