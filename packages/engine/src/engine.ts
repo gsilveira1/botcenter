@@ -108,7 +108,7 @@ export async function handleInbound(
       severity: 'info',
       message: `The state "${snapshot.state}" is final. Start a new conversation.`,
     });
-    return stay(definition, snapshot, 'message', variables, diagnostics, false, options.now);
+    return stay(definition, snapshot, variables, diagnostics, false, options.now);
   }
 
   const text = messageText(input);
@@ -152,7 +152,7 @@ export async function handleInbound(
     severity: 'info',
     message: `No transition of "${snapshot.state}" matched the message.`,
   });
-  return stay(definition, snapshot, 'message', variables, diagnostics, true, options.now);
+  return stay(definition, snapshot, variables, diagnostics, true, options.now);
 }
 
 /**
@@ -316,7 +316,6 @@ function sameVariables(left: Variables, right: Variables): boolean {
 function stay(
   definition: BotDefinition,
   snapshot: ConversationSnapshot,
-  trigger: TransitionTrigger,
   variables: Variables,
   diagnostics: Diagnostic[],
   restartTimer: boolean,
@@ -328,7 +327,7 @@ function stay(
   const persist = pending !== null || !sameVariables(snapshot.variables, variables);
   const version = persist ? snapshot.version + 1 : snapshot.version;
   return {
-    trigger,
+    trigger: 'message',
     matched: false,
     persist,
     fromState: snapshot.state,
