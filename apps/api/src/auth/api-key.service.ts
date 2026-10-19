@@ -26,7 +26,11 @@ export const KEY_CACHE_TTL_SECONDS = 60;
  */
 export const REVOCATION_MARKER_TTL_SECONDS = 120;
 const TOUCH_INTERVAL_SECONDS = 60;
-/** The cache value of a prefix that does not exist (a scan with random keys does not reach the database). */
+/**
+ * The cache value of a prefix that does not exist, from older versions. The service does not write it
+ * any more (SEC-10): a scan with random prefixes must not fill Redis, which BullMQ shares with no
+ * eviction. The unique index on `prefix` and the failure limit for each address protect PostgreSQL.
+ */
 const MISSING = 'missing';
 
 /** Writes the cache entry only when the revocation marker (KEYS[2]) does not exist. */
@@ -74,20 +78,21 @@ export class ApiKeyService {
       return JSON.parse(cached) as ApiKeyRecord;
     }
     const row = await this.prisma.apiKey.findUnique({ where: { prefix } });
-    const record: ApiKeyRecord | null = row
-      ? {
-          id: row.id,
-          tenantId: row.tenantId,
-          prefix: row.prefix,
-          secretHash: row.secretHash,
-          scopes: row.scopes,
-          instanceIds: row.instanceIds,
-          allowedIps: row.allowedIps,
-          rateLimitPerMinute: row.rateLimitPerMinute,
-          revokedAt: row.revokedAt?.toISOString() ?? null,
-          expiresAt: row.expiresAt?.toISOString() ?? null,
-        }
-      : null;
+    if (!row) {
+      return null;
+    }
+    const record: ApiKeyRecord = {
+      id: row.id,
+      tenantId: row.tenantId,
+      prefix: row.prefix,
+      secretHash: row.secretHash,
+      scopes: row.scopes,
+      instanceIds: row.instanceIds,
+      allowedIps: row.allowedIps,
+      rateLimitPerMinute: row.rateLimitPerMinute,
+      revokedAt: row.revokedAt?.toISOString() ?? null,
+      expiresAt: row.expiresAt?.toISOString() ?? null,
+    };
     try {
       // A revocation between the read and this write sets the marker: the stale record is not cached.
       await this.redis.eval(
@@ -95,7 +100,7 @@ export class ApiKeyService {
         2,
         cacheKey,
         redisKeys.apiKeyRevoked(prefix),
-        record ? JSON.stringify(record) : MISSING,
+        JSON.stringify(record),
         String(KEY_CACHE_TTL_SECONDS),
       );
     } catch (error) {
