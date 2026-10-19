@@ -149,7 +149,7 @@ function buildOperation(route: RouteInfo, components: Components): JsonSchema {
         ? (response.schema as { name: string }).name
         : response.schema.name;
       entry['content'] = {
-        'application/json': {
+        [response.contentType ?? 'application/json']: {
           schema: register(components, name, response.schema.schema, 'output'),
         },
       };
