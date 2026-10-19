@@ -17,7 +17,8 @@
     "format:check": "prettier --check .",
     "db:generate": "pnpm --filter @botcenter/prisma generate",
     "db:migrate": "pnpm --filter @botcenter/prisma migrate",
-    "gate": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:int"
+    "gate": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:int",
+    "test:smoke": "pnpm --filter @botcenter/tests-smoke smoke"
   },
   "devDependencies": {
     "@botcenter/config": "workspace:*",

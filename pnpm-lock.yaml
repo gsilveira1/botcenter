@@ -317,6 +317,22 @@ importers:
         specifier: ^16.4.0
         version: 16.5.0
 
+  tests/smoke:
+    dependencies:
+      '@botcenter/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
+    devDependencies:
+      '@botcenter/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      eslint:
+        specifier: ^9.39.5
+        version: 9.39.5(jiti@2.7.0)
+      globals:
+        specifier: ^16.4.0
+        version: 16.5.0
+
 packages:
 
   '@aws-sdk/checksums@3.1001.3':

@@ -1,0 +1,17 @@
+# Local HTTPS webhook receiver of the smoke test. It logs each request and answers 204.
+{
+	admin off
+	log {
+		output stdout
+		format json
+	}
+}
+
+receiver.smoke.test {
+	tls internal
+	log {
+		output stdout
+		format json
+	}
+	respond 204
+}

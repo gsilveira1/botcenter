@@ -6,6 +6,7 @@ import {
   baseUrl,
   buildOptions,
   idempotencyKey,
+  instanceFor,
   messagePayload,
   positiveNumber,
   requireEnv,
@@ -60,6 +61,13 @@ describe('request helpers', () => {
       priority: 'bulk',
     });
     assert.match(payload.to, /^[1-9]\d{9,14}$/);
+  });
+
+  it('spreads the messages over INSTANCE_IDS when it is set', () => {
+    const env = { INSTANCE_ID: 'single', INSTANCE_IDS: 'a, b,,c' };
+    const used = [0, 1, 2, 3].map((iteration) => messagePayload(env, 1, iteration).instance_id);
+    assert.deepEqual(used, ['b', 'c', 'a', 'b']);
+    assert.equal(instanceFor({ INSTANCE_ID: 'single', INSTANCE_IDS: '' }, 1, 1), 'single');
   });
 
   it('gives a different Idempotency-Key for each VU and iteration', () => {

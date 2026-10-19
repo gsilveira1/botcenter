@@ -17,7 +17,7 @@ mkdir -p "$DIR/results"
 summary="results/${scenario%.js}-$(date -u +%Y%m%dT%H%M%SZ).json"
 
 env_args=()
-for name in BASE_URL API_KEY INSTANCE_ID TO RATE DURATION VUS MAX_VUS SEED_MESSAGES RUN_ID; do
+for name in BASE_URL API_KEY INSTANCE_ID INSTANCE_IDS TO RATE DURATION VUS MAX_VUS SEED_MESSAGES RUN_ID; do
   if [[ -n "${!name:-}" ]]; then
     env_args+=(-e "${name}=${!name}")
   fi
